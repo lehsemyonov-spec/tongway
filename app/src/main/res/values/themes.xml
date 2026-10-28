@@ -4,19 +4,19 @@
         <item name="colorSecondary">@color/brand_dark</item>
     </style>
 
-    <style name="Tongway.SectionTitle">
+    <style name="Tongway.SectionTitle" parent="">
         <item name="android:textSize">18sp</item>
         <item name="android:textStyle">bold</item>
         <item name="android:layout_marginTop">20dp</item>
     </style>
 
-    <style name="Tongway.Hint">
+    <style name="Tongway.Hint" parent="">
         <item name="android:textSize">14sp</item>
         <item name="android:layout_marginTop">4dp</item>
         <item name="android:alpha">0.8</item>
     </style>
 
-    <style name="Tongway.Status">
+    <style name="Tongway.Status" parent="">
         <item name="android:textSize">15sp</item>
         <item name="android:layout_marginTop">8dp</item>
     </style>
