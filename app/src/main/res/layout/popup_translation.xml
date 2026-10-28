@@ -112,7 +112,48 @@
         </LinearLayout>
     </com.tongway.translator.overlay.MaxHeightScrollView>
 
+    <!-- Меню по касанию кружка. -->
     <LinearLayout
+        android:id="@+id/popupMenu"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/menuScreen"
+            style="@style/Tongway.PillSmall"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1.2"
+            android:text="@string/menu_screen" />
+
+        <TextView
+            android:id="@+id/menuHistory"
+            style="@style/Tongway.PillSmall.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="@string/menu_history" />
+
+        <TextView
+            android:id="@+id/menuSettings"
+            style="@style/Tongway.PillSmall.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:paddingStart="4dp"
+            android:paddingEnd="4dp"
+            android:text="@string/menu_settings" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/popupActions"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="12dp"

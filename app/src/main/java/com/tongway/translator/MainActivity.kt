@@ -69,6 +69,15 @@ class MainActivity : AppCompatActivity() {
         btnBubble.setOnClickListener { toggleBubble() }
         findViewById<View>(R.id.btnHowTo).setOnClickListener { showHowTo() }
         findViewById<View>(R.id.btnTestTranslate).setOnClickListener { testTranslate() }
+        findViewById<View>(R.id.btnMenu).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        findViewById<View>(R.id.btnSettings).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        findViewById<View>(R.id.btnHistory).setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
         findViewById<View>(R.id.btnLog).setOnClickListener {
             startActivity(Intent(this, LogActivity::class.java))
         }

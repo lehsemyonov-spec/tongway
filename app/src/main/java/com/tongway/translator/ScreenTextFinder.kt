@@ -37,6 +37,59 @@ object ScreenTextFinder {
         return null
     }
 
+    /** Один кусок текста на экране для перевода всего экрана. */
+    data class Block(val text: String, val bounds: Rect)
+
+    private const val MAX_BLOCKS = 120
+
+    /**
+     * Собирает весь видимый текст из окон приложений (без системных панелей и клавиатуры).
+     * Блоки идут сверху вниз; одинаковые и полностью перекрытые повторы отбрасываются.
+     */
+    fun collectAll(service: AccessibilityService, screen: Rect): Pair<List<Block>, String> {
+        val blocks = mutableListOf<Block>()
+        var packageName = "?"
+        val windows = service.windows
+            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            .sortedByDescending { it.layer }
+        val roots = windows.mapNotNull { it.root }.ifEmpty { listOfNotNull(service.rootInActiveWindow) }
+        for (root in roots) {
+            if (packageName == "?") packageName = root.packageName?.toString() ?: "?"
+            collect(root, screen, blocks)
+            if (blocks.size >= MAX_BLOCKS) break
+        }
+        val unique = blocks
+            .distinctBy { it.text to it.bounds }
+            .filterNot { outer ->
+                // Контейнер, текст которого уже есть у вложенного элемента, не нужен.
+                blocks.any { inner -> inner !== outer && outer.bounds.contains(inner.bounds) && inner.text == outer.text && inner.bounds != outer.bounds }
+            }
+            .sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+        return unique to packageName
+    }
+
+    private fun collect(root: AccessibilityNodeInfo, screen: Rect, out: MutableList<Block>) {
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.addLast(root)
+        var visited = 0
+        while (stack.isNotEmpty() && visited < MAX_NODES && out.size < MAX_BLOCKS) {
+            val node = stack.removeLast()
+            visited++
+            if (!node.isVisibleToUser) continue
+            val text = node.text?.toString()?.trim()
+            if (!text.isNullOrEmpty() && text.any { it.isLetter() }) {
+                val bounds = Rect()
+                node.getBoundsInScreen(bounds)
+                if (bounds.width() > 0 && bounds.height() > 0 && bounds.intersect(screen)) {
+                    out.add(Block(text.take(MAX_TEXT), bounds))
+                }
+            }
+            for (i in node.childCount - 1 downTo 0) {
+                node.getChild(i)?.let { stack.addLast(it) }
+            }
+        }
+    }
+
     private fun findInTree(root: AccessibilityNodeInfo, x: Int, y: Int): Found? {
         var best: AccessibilityNodeInfo? = null
         var bestText: String? = null

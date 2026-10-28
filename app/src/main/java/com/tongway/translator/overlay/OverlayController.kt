@@ -5,6 +5,7 @@ import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Point
 import android.graphics.Rect
@@ -17,6 +18,7 @@ import android.os.SystemClock
 import android.view.ContextThemeWrapper
 import android.view.Display
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
@@ -26,6 +28,10 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.TextView
 import android.widget.Toast
 import com.tongway.translator.App
+import com.tongway.translator.BubbleTileService
+import com.tongway.translator.HistoryActivity
+import com.tongway.translator.HistoryStore
+import com.tongway.translator.SettingsActivity
 import com.tongway.translator.ModelDownloadWatcher
 import com.tongway.translator.ui.MechanicalDnaView
 import com.tongway.translator.ui.TechProgressView
@@ -45,7 +51,8 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
- * Все окна поверх приложений: кружок, прицел, крестик, рамка и карточка с переводом.
+ * Все окна поверх приложений: кружок, прицел, крестик, рамка, карточка с переводом
+ * и перевод всего экрана.
  * Окна типа TYPE_ACCESSIBILITY_OVERLAY принадлежат службе спец. возможностей,
  * поэтому отдельное разрешение «поверх других окон» не нужно.
  */
@@ -57,7 +64,8 @@ class OverlayController(private val service: AccessibilityService) {
     private val density = service.resources.displayMetrics.density
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
-    private val bubbleSize = dp(BUBBLE_DP)
+    private var bubbleSize = dp(Prefs.bubbleSizeDp(service))
+    private var idleAlpha = Prefs.bubbleAlpha(service)
     private val aimSize = dp(AIM_DP)
     private val closeSize = dp(CLOSE_DP)
 
@@ -76,6 +84,9 @@ class OverlayController(private val service: AccessibilityService) {
     private var translateJob: Job? = null
     private var lastOutsideDismiss = 0L
 
+    private var screenOverlay: ScreenTranslationView? = null
+    private var screenBar: View? = null
+
     /** Сдвиг между координатами окон и экрана (на некоторых телефонах из-за выреза камеры). */
     private val windowOffset = Point()
 
@@ -85,8 +96,12 @@ class OverlayController(private val service: AccessibilityService) {
 
     fun showBubble() {
         if (bubble != null) return
+        bubbleSize = dp(Prefs.bubbleSizeDp(service))
+        idleAlpha = Prefs.bubbleAlpha(service)
+        bubbleParams.width = bubbleSize
+        bubbleParams.height = bubbleSize
         val view = BubbleView(context).apply {
-            alpha = IDLE_ALPHA
+            alpha = idleAlpha
             contentDescription = context.getString(R.string.service_label)
             setOnTouchListener(BubbleTouchListener())
         }
@@ -98,20 +113,47 @@ class OverlayController(private val service: AccessibilityService) {
             bubble = view
             AppLog.i("Кружок показан")
         }
+        BubbleTileService.refresh(service)
+    }
+
+    /** Применить настройки кружка (размер, прозрачность) без перезапуска. */
+    fun applySettings() {
+        idleAlpha = Prefs.bubbleAlpha(service)
+        val newSize = dp(Prefs.bubbleSizeDp(service))
+        val view = bubble
+        if (view == null) {
+            bubbleSize = newSize
+            return
+        }
+        view.alpha = idleAlpha
+        if (newSize != bubbleSize) {
+            val centerX = bubbleParams.x + bubbleSize / 2
+            val centerY = bubbleParams.y + bubbleSize / 2
+            bubbleSize = newSize
+            bubbleParams.width = newSize
+            bubbleParams.height = newSize
+            bubbleParams.x = centerX - newSize / 2
+            bubbleParams.y = centerY - newSize / 2
+            clampBubble(screenSize())
+            runCatching { windowManager.updateViewLayout(view, bubbleParams) }
+        }
     }
 
     fun hideBubble() {
         snapAnimator?.cancel()
         removeDragViews()
         dismissPopup()
+        closeScreenTranslation()
         bubble?.let { removeWindow(it) }
         if (bubble != null) AppLog.i("Кружок убран")
         bubble = null
+        BubbleTileService.refresh(service)
     }
 
     fun onScreenChanged() {
         val view = bubble ?: return
         dismissPopup()
+        closeScreenTranslation()
         clampBubble(screenSize())
         windowManager.updateViewLayout(view, bubbleParams)
     }
@@ -119,6 +161,7 @@ class OverlayController(private val service: AccessibilityService) {
     fun destroy() {
         translateJob?.cancel()
         hideBubble()
+        closeScreenTranslation()
         scope.cancel()
     }
 
@@ -132,6 +175,11 @@ class OverlayController(private val service: AccessibilityService) {
         val view = bubble ?: return
         val screen = screenSize()
         clampBubble(screen)
+        if (!Prefs.snapToEdge(service)) {
+            runCatching { windowManager.updateViewLayout(view, bubbleParams) }
+            Prefs.saveBubblePosition(service, bubbleParams.x, bubbleParams.y)
+            return
+        }
         val centerX = bubbleParams.x + bubbleSize / 2
         val targetX = if (centerX < screen.x / 2) 0 else screen.x - bubbleSize
         snapAnimator?.cancel()
@@ -155,6 +203,16 @@ class OverlayController(private val service: AccessibilityService) {
         private var startX = 0
         private var startY = 0
         private var dragging = false
+        private var longPressed = false
+        private var pressedView: View? = null
+
+        /** Долгое нажатие без перетаскивания — перевод всего экрана. */
+        private val longPress = Runnable {
+            if (dragging) return@Runnable
+            longPressed = true
+            pressedView?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            translateScreen()
+        }
 
         override fun onTouch(view: View, event: MotionEvent): Boolean {
             when (event.actionMasked) {
@@ -165,13 +223,17 @@ class OverlayController(private val service: AccessibilityService) {
                     startX = bubbleParams.x
                     startY = bubbleParams.y
                     dragging = false
+                    longPressed = false
+                    pressedView = view
                     view.alpha = 1f
+                    view.postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.rawX - downX
                     val dy = event.rawY - downY
-                    if (!dragging && hypot(dx, dy) > touchSlop) {
+                    if (!dragging && !longPressed && hypot(dx, dy) > touchSlop) {
                         dragging = true
+                        view.removeCallbacks(longPress)
                         startDrag()
                     }
                     if (dragging) {
@@ -182,11 +244,16 @@ class OverlayController(private val service: AccessibilityService) {
                     }
                 }
                 MotionEvent.ACTION_UP -> {
-                    view.alpha = IDLE_ALPHA
-                    if (dragging) endDrag(cancelled = false) else onBubbleTap()
+                    view.removeCallbacks(longPress)
+                    view.alpha = idleAlpha
+                    when {
+                        dragging -> endDrag(cancelled = false)
+                        !longPressed -> onBubbleTap()
+                    }
                 }
                 MotionEvent.ACTION_CANCEL -> {
-                    view.alpha = IDLE_ALPHA
+                    view.removeCallbacks(longPress)
+                    view.alpha = idleAlpha
                     if (dragging) endDrag(cancelled = true)
                 }
             }
@@ -201,15 +268,14 @@ class OverlayController(private val service: AccessibilityService) {
             dismissPopup()
             return
         }
-        val anchor = Rect(bubbleParams.x, bubbleParams.y, bubbleParams.x + bubbleSize, bubbleParams.y + bubbleSize)
-        anchor.offset(windowOffset.x, windowOffset.y)
-        showPopup(anchor).showMessage(context.getString(R.string.bubble_tap_hint))
+        showPopup(bubbleAnchor()).showMenu()
     }
 
     // ---------- Перетаскивание: прицел и крестик ----------
 
     private fun startDrag() {
         dismissPopup()
+        closeScreenTranslation()
         val aim = CrosshairView(context)
         val close = CloseZoneView(context)
         val screen = screenSize()
@@ -320,6 +386,9 @@ class OverlayController(private val service: AccessibilityService) {
                     onDownload = { progress -> card.showDownload(progress) },
                 )
                 card.showResult(result)
+                if (!result.alreadyTarget) {
+                    HistoryStore.add(service, result.original, result.translated, appLabel(found.packageName))
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -329,6 +398,131 @@ class OverlayController(private val service: AccessibilityService) {
                 bubble?.busy = false
             }
         }
+    }
+
+    // ---------- Перевод всего экрана ----------
+
+    private fun translateScreen() {
+        translateJob?.cancel()
+        dismissPopup()
+        closeScreenTranslation()
+        updateWindowOffset()
+        translateJob = scope.launch {
+            if (!App.engine.isModelDownloaded(TranslationEngine.TARGET) ||
+                !App.engine.isModelDownloaded(com.google.mlkit.nl.translate.TranslateLanguage.ENGLISH)
+            ) {
+                showPopup(bubbleAnchor()).showMessage(context.getString(R.string.screen_need_model))
+                return@launch
+            }
+            val screen = screenSize()
+            val (blocks, packageName) = try {
+                withContext(Dispatchers.Default) {
+                    ScreenTextFinder.collectAll(service, Rect(0, 0, screen.x, screen.y))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.e("Ошибка при сборе текста с экрана", e)
+                emptyList<ScreenTextFinder.Block>() to "?"
+            }
+            val english = blocks.filterNot { App.engine.looksCyrillic(it.text) }
+            if (english.isEmpty()) {
+                AppLog.i("Перевод экрана: текста не нашлось")
+                showPopup(bubbleAnchor()).showMessage(context.getString(R.string.screen_no_text))
+                return@launch
+            }
+            AppLog.i("Перевод экрана в $packageName: ${english.size} кусков текста")
+            val overlay = ScreenTranslationView(context, english.map { it.bounds })
+            val fullScreen = overlayParams(screen.x, screen.y, touchable = false).apply {
+                x = -windowOffset.x
+                y = -windowOffset.y
+            }
+            if (!addWindow(overlay, fullScreen)) return@launch
+            screenOverlay = overlay
+            val bar = showScreenBar(overlay)
+            val status = bar.findViewById<TextView>(R.id.barStatus)
+            val dna = bar.findViewById<MechanicalDnaView>(R.id.barDna)
+            bubble?.busy = true
+            try {
+                english.forEachIndexed { index, block ->
+                    status.text = context.getString(R.string.screen_progress, index, english.size)
+                    overlay.setTranslation(index, App.engine.translateEnglish(block.text))
+                }
+                status.text = context.getString(R.string.screen_done, english.size)
+                bar.findViewById<View>(R.id.barCopy).visibility = View.VISIBLE
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.e("Ошибка перевода экрана", e)
+                status.text = context.getString(R.string.screen_error, e.message ?: e.javaClass.simpleName)
+            } finally {
+                dna.animating = false
+                bubble?.busy = false
+            }
+        }
+    }
+
+    /** Панель внизу: ход перевода, «Копировать» и «✕». Касание в любом другом месте закрывает перевод. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showScreenBar(overlay: ScreenTranslationView): View {
+        val bar = LayoutInflater.from(context).inflate(R.layout.screen_bar, null)
+        bar.background = popupBackground()
+        val screen = screenSize()
+        val width = minOf(screen.x - dp(24), dp(520))
+        val params = overlayParams(width, WindowManager.LayoutParams.WRAP_CONTENT, touchable = true).apply {
+            flags = flags or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
+            x = (screen.x - width) / 2 - windowOffset.x
+            y = screen.y - dp(140) - windowOffset.y
+        }
+        bar.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                lastOutsideDismiss = SystemClock.uptimeMillis()
+                translateJob?.cancel()
+                closeScreenTranslation()
+                true
+            } else {
+                false
+            }
+        }
+        bar.findViewById<View>(R.id.barClose).setOnClickListener {
+            translateJob?.cancel()
+            closeScreenTranslation()
+        }
+        bar.findViewById<View>(R.id.barCopy).setOnClickListener {
+            val clipboard = service.getSystemService(ClipboardManager::class.java)
+            clipboard.setPrimaryClip(ClipData.newPlainText("Перевод экрана", overlay.allTranslations()))
+            Toast.makeText(service, R.string.popup_copied, Toast.LENGTH_SHORT).show()
+        }
+        if (addWindow(bar, params)) screenBar = bar
+        return bar
+    }
+
+    private fun closeScreenTranslation() {
+        screenOverlay?.let { removeWindow(it) }
+        screenOverlay = null
+        screenBar?.let {
+            it.findViewById<MechanicalDnaView>(R.id.barDna)?.animating = false
+            removeWindow(it)
+        }
+        screenBar = null
+    }
+
+    private fun bubbleAnchor(): Rect {
+        val anchor = Rect(bubbleParams.x, bubbleParams.y, bubbleParams.x + bubbleSize, bubbleParams.y + bubbleSize)
+        anchor.offset(windowOffset.x, windowOffset.y)
+        return anchor
+    }
+
+    private fun appLabel(packageName: String): String = runCatching {
+        val pm = service.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(packageName, 0)).toString()
+    }.getOrDefault(packageName)
+
+    private fun openActivity(activity: Class<*>) {
+        dismissPopup()
+        runCatching {
+            service.startActivity(Intent(service, activity).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.onFailure { AppLog.e("Не удалось открыть экран приложения", it) }
     }
 
     private fun showHighlight(bounds: Rect) {
@@ -401,6 +595,7 @@ class OverlayController(private val service: AccessibilityService) {
         private val btnOriginal = root.findViewById<TextView>(R.id.popupBtnOriginal)
         private val btnCopy = root.findViewById<TextView>(R.id.popupBtnCopy)
         private val btnClose = root.findViewById<TextView>(R.id.popupBtnClose)
+        private val menu = root.findViewById<View>(R.id.popupMenu)
 
         private val params: WindowManager.LayoutParams
         private var attached = false
@@ -438,8 +633,18 @@ class OverlayController(private val service: AccessibilityService) {
                 clipboard.setPrimaryClip(ClipData.newPlainText("Перевод", translation.text))
                 Toast.makeText(service, R.string.popup_copied, Toast.LENGTH_SHORT).show()
             }
+            root.findViewById<View>(R.id.menuScreen).setOnClickListener { translateScreen() }
+            root.findViewById<View>(R.id.menuHistory).setOnClickListener { openActivity(HistoryActivity::class.java) }
+            root.findViewById<View>(R.id.menuSettings).setOnClickListener { openActivity(SettingsActivity::class.java) }
             setActionsVisible(false)
             attached = addWindow(root, params.also { it.y = placeY(measureHeight()) })
+        }
+
+        /** Меню по касанию кружка: подсказка и кнопки. */
+        fun showMenu() {
+            showMessage(context.getString(R.string.bubble_tap_hint))
+            menu.visibility = View.VISIBLE
+            reposition()
         }
 
         /** Идёт работа: крутится ДНК и рядом подпись. */
@@ -582,10 +787,8 @@ class OverlayController(private val service: AccessibilityService) {
     private fun dp(value: Int) = (value * density).roundToInt()
 
     companion object {
-        private const val BUBBLE_DP = 68
         private const val AIM_DP = 60
         private const val AIM_OFFSET_DP = 72
         private const val CLOSE_DP = 72
-        private const val IDLE_ALPHA = 0.92f
     }
 }

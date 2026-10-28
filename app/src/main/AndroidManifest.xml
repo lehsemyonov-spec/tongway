@@ -3,6 +3,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Чтобы в истории показывать названия приложений, где был перевод. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".App"
         android:allowBackup="false"
@@ -25,6 +33,30 @@
             android:name=".LogActivity"
             android:exported="false"
             android:label="@string/log_title" />
+
+        <activity
+            android:name=".HistoryActivity"
+            android:exported="false"
+            android:label="@string/history_title" />
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/settings_title" />
+
+        <service
+            android:name=".BubbleTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_translate"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
 
         <service
             android:name=".TranslatorService"

@@ -90,9 +90,9 @@ class TranslationEngine(private val context: Context) {
         if (tag == TARGET || (tag == UNDETERMINED && looksCyrillic(text))) {
             return Result(text, text, TARGET, alreadyTarget = true)
         }
-        val source = TranslateLanguage.fromLanguageTag(tag)?.takeIf { it != TARGET }
-            ?: TranslateLanguage.ENGLISH
-        AppLog.i("Язык: определён «$tag», перевожу с «$source»")
+        // Пока переводим только с английского: словари других языков сами не докачиваем.
+        val source = TranslateLanguage.ENGLISH
+        if (tag != UNDETERMINED && tag != source) AppLog.i("Язык определён как «$tag», перевожу как английский")
 
         if (!isModelDownloaded(source) || !isModelDownloaded(TARGET)) {
             onStatus("Скачиваю словарь: ${languageName(source)} → русский (около 30 МБ, один раз)…")
@@ -111,7 +111,20 @@ class TranslationEngine(private val context: Context) {
         return Result(text, translated, source, alreadyTarget = false)
     }
 
-    private fun looksCyrillic(text: String): Boolean {
+    /**
+     * Быстрый перевод для всего экрана: без определения языка, только с английского.
+     * Русский текст возвращается как есть.
+     */
+    suspend fun translateEnglish(text: String): String {
+        if (looksCyrillic(text)) return text
+        val translator = translator(TranslateLanguage.ENGLISH)
+        translator.downloadModelIfNeeded(downloadConditions).await()
+        return text.split('\n').map { line ->
+            if (line.isBlank()) line else translator.translate(line).await()
+        }.joinToString("\n")
+    }
+
+    fun looksCyrillic(text: String): Boolean {
         var cyrillic = 0
         var latin = 0
         for (ch in text) {

@@ -2,6 +2,7 @@ package com.tongway.translator
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.view.accessibility.AccessibilityEvent
 import com.tongway.translator.overlay.OverlayController
@@ -11,11 +12,17 @@ class TranslatorService : AccessibilityService() {
 
     private var overlay: OverlayController? = null
 
+    /** Настройки кружка меняются на экране «Настройки» — применяем сразу. */
+    private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == Prefs.KEY_BUBBLE_SIZE || key == Prefs.KEY_BUBBLE_ALPHA) overlay?.applySettings()
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         overlay = OverlayController(this)
         AppLog.i("Служба спец. возможностей запущена")
+        Prefs.prefs(this).registerOnSharedPreferenceChangeListener(prefsListener)
         if (Prefs.isBubbleEnabled(this)) overlay?.showBubble()
     }
 
@@ -47,8 +54,10 @@ class TranslatorService : AccessibilityService() {
 
     private fun shutdown() {
         if (instance === this) instance = null
+        Prefs.prefs(this).unregisterOnSharedPreferenceChangeListener(prefsListener)
         overlay?.destroy()
         overlay = null
+        BubbleTileService.refresh(this)
     }
 
     companion object {
