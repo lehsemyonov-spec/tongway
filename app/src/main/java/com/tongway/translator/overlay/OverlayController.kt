@@ -8,6 +8,9 @@ import android.content.ClipboardManager
 import android.graphics.PixelFormat
 import android.graphics.Point
 import android.graphics.Rect
+import android.graphics.drawable.Drawable
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.SystemClock
@@ -20,11 +23,12 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
-import android.widget.Button
-import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import com.tongway.translator.App
+import com.tongway.translator.ModelDownloadWatcher
+import com.tongway.translator.ui.MechanicalDnaView
+import com.tongway.translator.ui.TechProgressView
 import com.tongway.translator.AppLog
 import com.tongway.translator.Prefs
 import com.tongway.translator.R
@@ -57,7 +61,7 @@ class OverlayController(private val service: AccessibilityService) {
     private val aimSize = dp(AIM_DP)
     private val closeSize = dp(CLOSE_DP)
 
-    private var bubble: ImageView? = null
+    private var bubble: BubbleView? = null
     private val bubbleParams = overlayParams(bubbleSize, bubbleSize, touchable = true)
     private var snapAnimator: ValueAnimator? = null
 
@@ -81,11 +85,7 @@ class OverlayController(private val service: AccessibilityService) {
 
     fun showBubble() {
         if (bubble != null) return
-        val view = ImageView(context).apply {
-            setImageResource(R.drawable.ic_translate)
-            setBackgroundResource(R.drawable.bubble_bg)
-            val padding = dp(13)
-            setPadding(padding, padding, padding, padding)
+        val view = BubbleView(context).apply {
             alpha = IDLE_ALPHA
             contentDescription = context.getString(R.string.service_label)
             setOnTouchListener(BubbleTouchListener())
@@ -312,21 +312,28 @@ class OverlayController(private val service: AccessibilityService) {
             val card = showPopup(found.bounds)
             showHighlight(found.bounds)
             card.showStatus(context.getString(R.string.translating))
+            bubble?.busy = true
             try {
-                val result = App.engine.translate(found.text) { status -> card.showStatus(status) }
+                val result = App.engine.translate(
+                    found.text,
+                    onStatus = { status -> card.showStatus(status) },
+                    onDownload = { progress -> card.showDownload(progress) },
+                )
                 card.showResult(result)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 AppLog.e("Ошибка перевода", e)
                 card.showMessage(context.getString(R.string.translate_error, e.message ?: e.javaClass.simpleName))
+            } finally {
+                bubble?.busy = false
             }
         }
     }
 
     private fun showHighlight(bounds: Rect) {
         removeHighlight()
-        val pad = dp(3)
+        val pad = dp(6)
         val params = overlayParams(bounds.width() + pad * 2, bounds.height() + pad * 2, touchable = false).apply {
             x = bounds.left - pad - windowOffset.x
             y = bounds.top - pad - windowOffset.y
@@ -361,22 +368,45 @@ class OverlayController(private val service: AccessibilityService) {
         removeHighlight()
     }
 
+    /** Тёмная карточка с оранжевым свечением в углу, как карточки на слайдах. */
+    private fun popupBackground(): Drawable {
+        val radius = dp(22).toFloat()
+        val base = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(0xF50B0B0B.toInt())
+            setStroke(dp(1), 0xFF3A3A3A.toInt())
+        }
+        val glow = GradientDrawable().apply {
+            cornerRadius = radius
+            gradientType = GradientDrawable.RADIAL_GRADIENT
+            gradientRadius = dp(260).toFloat()
+            setGradientCenter(1f, 0f)
+            colors = intArrayOf(0x995A2203.toInt(), 0x005A2203)
+        }
+        return LayerDrawable(arrayOf(base, glow))
+    }
+
     /** Карточка рядом с текстом. Закрывается касанием в любом другом месте экрана. */
     @SuppressLint("ClickableViewAccessibility")
     private inner class Popup(private val anchor: Rect) {
         private val root = LayoutInflater.from(context).inflate(R.layout.popup_translation, null)
         private val scroll = root.findViewById<MaxHeightScrollView>(R.id.popupScroll)
+        private val loader = root.findViewById<View>(R.id.popupLoader)
+        private val dna = root.findViewById<MechanicalDnaView>(R.id.popupDna)
+        private val status = root.findViewById<TextView>(R.id.popupStatus)
+        private val downloadBar = root.findViewById<TechProgressView>(R.id.popupProgress)
         private val translation = root.findViewById<TextView>(R.id.popupTranslation)
         private val original = root.findViewById<TextView>(R.id.popupOriginal)
         private val language = root.findViewById<TextView>(R.id.popupLang)
-        private val btnOriginal = root.findViewById<Button>(R.id.popupBtnOriginal)
-        private val btnCopy = root.findViewById<Button>(R.id.popupBtnCopy)
-        private val btnClose = root.findViewById<Button>(R.id.popupBtnClose)
+        private val btnOriginal = root.findViewById<TextView>(R.id.popupBtnOriginal)
+        private val btnCopy = root.findViewById<TextView>(R.id.popupBtnCopy)
+        private val btnClose = root.findViewById<TextView>(R.id.popupBtnClose)
 
         private val params: WindowManager.LayoutParams
         private var attached = false
 
         init {
+            root.background = popupBackground()
             val screen = screenSize()
             val width = minOf(screen.x - dp(24), dp(520))
             params = overlayParams(width, WindowManager.LayoutParams.WRAP_CONTENT, touchable = true).apply {
@@ -408,47 +438,75 @@ class OverlayController(private val service: AccessibilityService) {
                 clipboard.setPrimaryClip(ClipData.newPlainText("Перевод", translation.text))
                 Toast.makeText(service, R.string.popup_copied, Toast.LENGTH_SHORT).show()
             }
-            btnOriginal.visibility = View.GONE
-            btnCopy.visibility = View.GONE
+            setActionsVisible(false)
             attached = addWindow(root, params.also { it.y = placeY(measureHeight()) })
         }
 
+        /** Идёт работа: крутится ДНК и рядом подпись. */
         fun showStatus(text: String) {
-            translation.text = text
-            translation.alpha = 0.7f
+            loader.visibility = View.VISIBLE
+            dna.animating = true
+            status.text = text
+            translation.visibility = View.GONE
+            reposition()
+        }
+
+        /** Пришлось скачивать словарь — показываем полосу загрузки. */
+        fun showDownload(progress: ModelDownloadWatcher.Progress) {
+            val fraction = progress.fraction
+            downloadBar.visibility = View.VISIBLE
+            downloadBar.progress = fraction
+            status.text = when {
+                progress.waitingReason != null -> "Скачивание словаря: ${progress.waitingReason}"
+                fraction == null -> "Подключаюсь, чтобы скачать словарь…"
+                else -> "Скачиваю словарь: ${ModelDownloadWatcher.formatMb(progress.downloadedBytes)} " +
+                    "из ${if (progress.exact) "" else "~"}${ModelDownloadWatcher.formatMb(progress.totalBytes)}"
+            }
             reposition()
         }
 
         fun showMessage(text: String) {
+            stopLoader()
+            translation.visibility = View.VISIBLE
             translation.text = text
-            translation.alpha = 1f
-            btnOriginal.visibility = View.GONE
-            btnCopy.visibility = View.GONE
+            setActionsVisible(false)
             language.visibility = View.GONE
             reposition()
         }
 
         fun showResult(result: TranslationEngine.Result) {
-            translation.alpha = 1f
+            stopLoader()
+            translation.visibility = View.VISIBLE
+            original.text = result.original
             if (result.alreadyTarget) {
                 translation.text = context.getString(R.string.already_russian)
-                original.text = result.original
                 original.visibility = View.VISIBLE
                 reposition()
                 return
             }
             translation.text = result.translated
-            original.text = result.original
-            language.text = "${TranslationEngine.languageName(result.sourceLanguage)} → русский · на телефоне"
+            language.text = "${result.sourceLanguage.uppercase()} → RU"
             language.visibility = View.VISIBLE
-            btnOriginal.visibility = View.VISIBLE
-            btnCopy.visibility = View.VISIBLE
+            setActionsVisible(true)
             reposition()
         }
 
         fun remove() {
+            dna.animating = false
             if (attached) removeWindow(root)
             attached = false
+        }
+
+        private fun stopLoader() {
+            dna.animating = false
+            loader.visibility = View.GONE
+            downloadBar.visibility = View.GONE
+        }
+
+        private fun setActionsVisible(visible: Boolean) {
+            val state = if (visible) View.VISIBLE else View.GONE
+            btnOriginal.visibility = state
+            btnCopy.visibility = state
         }
 
         private fun measureHeight(): Int {
@@ -524,10 +582,10 @@ class OverlayController(private val service: AccessibilityService) {
     private fun dp(value: Int) = (value * density).roundToInt()
 
     companion object {
-        private const val BUBBLE_DP = 52
-        private const val AIM_DP = 40
+        private const val BUBBLE_DP = 68
+        private const val AIM_DP = 60
         private const val AIM_OFFSET_DP = 72
         private const val CLOSE_DP = 72
-        private const val IDLE_ALPHA = 0.85f
+        private const val IDLE_ALPHA = 0.92f
     }
 }

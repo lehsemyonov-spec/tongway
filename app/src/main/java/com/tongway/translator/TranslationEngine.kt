@@ -9,6 +9,9 @@ import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
+import android.content.Context
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.Locale
 
@@ -16,7 +19,7 @@ import java.util.Locale
  * Перевод прямо на телефоне через Google ML Kit.
  * Вызывать с главного потока: переводчики хранятся без блокировок.
  */
-class TranslationEngine {
+class TranslationEngine(private val context: Context) {
 
     data class Result(
         val original: String,
@@ -49,13 +52,37 @@ class TranslationEngine {
     suspend fun baseModelsReady(): Boolean =
         isModelDownloaded(TranslateLanguage.ENGLISH) && isModelDownloaded(TARGET)
 
-    suspend fun downloadBaseModels() {
+    suspend fun downloadBaseModels(onProgress: (ModelDownloadWatcher.Progress) -> Unit) {
         AppLog.i("Скачиваю словарь английский → русский")
-        translator(TranslateLanguage.ENGLISH).downloadModelIfNeeded(downloadConditions).await()
-        AppLog.i("Словарь английский → русский скачан")
+        val started = System.currentTimeMillis()
+        withDownloadProgress(onProgress) {
+            translator(TranslateLanguage.ENGLISH).downloadModelIfNeeded(downloadConditions).await()
+        }
+        AppLog.i("Словарь английский → русский скачан за ${(System.currentTimeMillis() - started) / 1000} с")
     }
 
-    suspend fun translate(text: String, onStatus: (String) -> Unit): Result {
+    /** Выполняет загрузку и, пока она идёт, сообщает прогресс. */
+    private suspend fun <T> withDownloadProgress(
+        onProgress: (ModelDownloadWatcher.Progress) -> Unit,
+        block: suspend () -> T,
+    ): T = coroutineScope {
+        val watcher = launch { ModelDownloadWatcher(context).watch(onProgress) }
+        try {
+            block()
+        } finally {
+            watcher.cancel()
+        }
+    }
+
+    /**
+     * onStatus — короткий текст состояния; onDownload — прогресс, если по пути
+     * пришлось скачивать словарь.
+     */
+    suspend fun translate(
+        text: String,
+        onStatus: (String) -> Unit,
+        onDownload: (ModelDownloadWatcher.Progress) -> Unit = {},
+    ): Result {
         val tag = runCatching { languageId.identifyLanguage(text).await() }
             .onFailure { AppLog.e("Не удалось определить язык", it) }
             .getOrDefault(UNDETERMINED)
@@ -72,7 +99,9 @@ class TranslationEngine {
             AppLog.i("Скачиваю словарь для «$source»")
         }
         val translator = translator(source)
-        translator.downloadModelIfNeeded(downloadConditions).await()
+        withDownloadProgress(onDownload) {
+            translator.downloadModelIfNeeded(downloadConditions).await()
+        }
         onStatus("Перевожу…")
 
         // По строкам: так сохраняются переносы и абзацы исходного текста.

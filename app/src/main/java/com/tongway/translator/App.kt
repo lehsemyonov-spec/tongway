@@ -7,6 +7,7 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         AppLog.init(this)
+        engine = TranslationEngine(this)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             AppLog.e("Сбой приложения", error)
@@ -17,6 +18,7 @@ class App : Application() {
 
     companion object {
         /** Один переводчик на всё приложение: его используют и главный экран, и кружок. */
-        val engine: TranslationEngine by lazy { TranslationEngine() }
+        lateinit var engine: TranslationEngine
+            private set
     }
 }

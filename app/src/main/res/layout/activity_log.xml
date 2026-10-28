@@ -3,24 +3,73 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="12dp">
+    android:paddingStart="18dp"
+    android:paddingTop="20dp"
+    android:paddingEnd="18dp"
+    android:paddingBottom="16dp">
+
+    <!-- Заголовок с ДНК в колбе со слайда. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <ImageView
+                android:id="@+id/btnBack"
+                android:layout_width="36dp"
+                android:layout_height="18dp"
+                android:clickable="true"
+                android:contentDescription="@string/back"
+                android:focusable="true"
+                android:src="@drawable/deco_toggle" />
+
+            <TextView
+                style="@style/Tongway.Title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="@string/log_title"
+                android:textSize="34sp" />
+
+            <TextView
+                style="@style/Tongway.Hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/log_hint" />
+        </LinearLayout>
+
+        <ImageView
+            android:layout_width="80dp"
+            android:layout_height="150dp"
+            android:importantForAccessibility="no"
+            android:scaleType="fitCenter"
+            android:src="@drawable/dna_capsule" />
+    </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal">
 
-        <com.google.android.material.button.MaterialButton
+        <TextView
             android:id="@+id/btnCopy"
+            style="@style/Tongway.Pill"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginEnd="8dp"
             android:layout_weight="1"
             android:text="@string/log_copy" />
 
-        <com.google.android.material.button.MaterialButton
+        <TextView
             android:id="@+id/btnClear"
-            style="@style/Widget.Material3.Button.OutlinedButton"
+            style="@style/Tongway.Pill.Outline"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
@@ -31,15 +80,18 @@
         android:id="@+id/logScroll"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_marginTop="8dp"
-        android:layout_weight="1">
+        android:layout_marginTop="14dp"
+        android:layout_weight="1"
+        android:background="@drawable/bg_card"
+        android:padding="12dp">
 
         <TextView
             android:id="@+id/logText"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
+            android:textColor="@color/text_secondary"
             android:textIsSelectable="true"
-            android:textSize="12sp" />
+            android:textSize="11sp" />
     </ScrollView>
 </LinearLayout>

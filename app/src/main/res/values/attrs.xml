@@ -1,0 +1,6 @@
+<resources>
+    <declare-styleable name="MechanicalDnaView">
+        <!-- true — спираль лежит горизонтально (для маленького индикатора в карточке перевода). -->
+        <attr name="dnaHorizontal" format="boolean" />
+    </declare-styleable>
+</resources>
