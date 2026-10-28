@@ -1,0 +1,50 @@
+<resources>
+    <string name="app_name">Tongway</string>
+    <string name="service_label">Tongway — кружок-переводчик</string>
+    <string name="service_description">Показывает кружок поверх приложений. Перетащите кружок так, чтобы прицел оказался на тексте, — и появится перевод на русский. Службе нужно читать текст на экране, чтобы его перевести. Текст никуда не отправляется: перевод делается прямо на телефоне.</string>
+    <string name="log_title">Журнал</string>
+
+    <string name="step_model_title">1. Словарь для перевода</string>
+    <string name="step_model_hint">Нужен один раз, около 30 МБ. Потом перевод работает без интернета.</string>
+    <string name="model_checking">Проверяю…</string>
+    <string name="model_ready">✅ Словарь английский → русский скачан</string>
+    <string name="model_missing">❌ Словарь ещё не скачан</string>
+    <string name="model_downloading">⏳ Скачиваю словарь… Не закрывайте приложение.</string>
+    <string name="model_download">Скачать словарь</string>
+
+    <string name="step_service_title">2. Спец. возможности</string>
+    <string name="step_service_hint">Откройте настройки, найдите «Tongway» (иногда в разделе «Скачанные приложения» или «Установленные службы») и включите.\n\nЕсли переключатель серый и пишет про ограниченную настройку: нажмите «О приложении» ниже → три точки вверху справа → «Разрешить ограниченные настройки». Потом снова откройте спец. возможности.</string>
+    <string name="service_on">✅ Служба включена</string>
+    <string name="service_off">❌ Служба выключена</string>
+    <string name="open_accessibility">Открыть спец. возможности</string>
+    <string name="open_app_info">О приложении</string>
+
+    <string name="step_bubble_title">3. Кружок</string>
+    <string name="step_bubble_hint">Перетащите кружок так, чтобы прицел над пальцем оказался на тексте, и отпустите — появится перевод. Чтобы убрать кружок, перетащите его на крестик внизу экрана.</string>
+    <string name="bubble_show">Показать кружок</string>
+    <string name="bubble_hide">Убрать кружок</string>
+    <string name="bubble_need_service">Сначала включите службу в спец. возможностях (шаг 2)</string>
+
+    <string name="test_title">Проверка перевода</string>
+    <string name="test_hint">Можно перевести текст здесь или навести кружок на английский текст в рамке.</string>
+    <string name="test_sample">The quick brown fox jumps over the lazy dog. This app translates text on your screen into Russian.</string>
+    <string name="test_translate">Перевести</string>
+
+    <string name="open_log">Журнал (для отправки ошибок)</string>
+    <string name="log_copy">Скопировать</string>
+    <string name="log_clear">Очистить</string>
+    <string name="log_copied">Журнал скопирован</string>
+    <string name="log_empty">Журнал пуст</string>
+
+    <string name="popup_original">Оригинал</string>
+    <string name="popup_hide_original">Скрыть</string>
+    <string name="popup_copy">Копировать</string>
+    <string name="popup_close">Закрыть</string>
+    <string name="popup_copied">Перевод скопирован</string>
+    <string name="translating">Перевожу…</string>
+    <string name="no_text_found">Здесь не нашлось текста. Попробуйте навести прицел точнее.\n\nТекст на картинках и в некоторых приложениях (игры, видео) пока не распознаётся.</string>
+    <string name="already_russian">Этот текст уже на русском.</string>
+    <string name="bubble_tap_hint">Перетащите кружок так, чтобы прицел над пальцем оказался на тексте, и отпустите.\n\nЧтобы убрать кружок, перетащите его на крестик внизу.</string>
+    <string name="bubble_closed">Кружок убран. Вернуть — в приложении Tongway.</string>
+    <string name="translate_error">Не удалось перевести: %1$s\n\nЕсли словарь не скачан, откройте Tongway и нажмите «Скачать словарь» (нужен интернет).</string>
+</resources>

@@ -1,0 +1,7 @@
+<resources>
+    <color name="popup_bg">#2B2D31</color>
+    <color name="popup_stroke">#33FFFFFF</color>
+    <color name="popup_text">#ECECEC</color>
+    <color name="popup_text_secondary">#A8ABB0</color>
+    <color name="sample_bg">#232A33</color>
+</resources>

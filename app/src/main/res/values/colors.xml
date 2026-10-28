@@ -1,0 +1,11 @@
+<resources>
+    <color name="brand">#1E88E5</color>
+    <color name="brand_dark">#1565C0</color>
+    <color name="aim">#E53935</color>
+    <color name="ic_launcher_background">#1E88E5</color>
+    <color name="popup_bg">#FFFFFF</color>
+    <color name="popup_stroke">#22000000</color>
+    <color name="popup_text">#1B1B1F</color>
+    <color name="popup_text_secondary">#5F6368</color>
+    <color name="sample_bg">#F1F5FB</color>
+</resources>

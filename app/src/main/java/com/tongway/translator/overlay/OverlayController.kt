@@ -1,0 +1,533 @@
+package com.tongway.translator.overlay
+
+import android.accessibilityservice.AccessibilityService
+import android.animation.ValueAnimator
+import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.graphics.PixelFormat
+import android.graphics.Point
+import android.graphics.Rect
+import android.hardware.display.DisplayManager
+import android.os.Build
+import android.os.SystemClock
+import android.view.ContextThemeWrapper
+import android.view.Display
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
+import android.widget.Button
+import android.widget.ImageView
+import android.widget.TextView
+import android.widget.Toast
+import com.tongway.translator.App
+import com.tongway.translator.AppLog
+import com.tongway.translator.Prefs
+import com.tongway.translator.R
+import com.tongway.translator.ScreenTextFinder
+import com.tongway.translator.TranslationEngine
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.hypot
+import kotlin.math.roundToInt
+
+/**
+ * Все окна поверх приложений: кружок, прицел, крестик, рамка и карточка с переводом.
+ * Окна типа TYPE_ACCESSIBILITY_OVERLAY принадлежат службе спец. возможностей,
+ * поэтому отдельное разрешение «поверх других окон» не нужно.
+ */
+class OverlayController(private val service: AccessibilityService) {
+
+    private val context = ContextThemeWrapper(service, R.style.Theme_Tongway)
+    private val windowManager = service.getSystemService(WindowManager::class.java)
+    private val scope = MainScope()
+    private val density = service.resources.displayMetrics.density
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+
+    private val bubbleSize = dp(BUBBLE_DP)
+    private val aimSize = dp(AIM_DP)
+    private val closeSize = dp(CLOSE_DP)
+
+    private var bubble: ImageView? = null
+    private val bubbleParams = overlayParams(bubbleSize, bubbleSize, touchable = true)
+    private var snapAnimator: ValueAnimator? = null
+
+    private var crosshair: CrosshairView? = null
+    private val crosshairParams = overlayParams(aimSize, aimSize, touchable = false)
+
+    private var closeZone: CloseZoneView? = null
+    private val closeParams = overlayParams(closeSize, closeSize, touchable = false)
+
+    private var highlight: HighlightView? = null
+    private var popup: Popup? = null
+    private var translateJob: Job? = null
+    private var lastOutsideDismiss = 0L
+
+    /** Сдвиг между координатами окон и экрана (на некоторых телефонах из-за выреза камеры). */
+    private val windowOffset = Point()
+
+    val isBubbleShown: Boolean get() = bubble != null
+
+    // ---------- Кружок ----------
+
+    fun showBubble() {
+        if (bubble != null) return
+        val view = ImageView(context).apply {
+            setImageResource(R.drawable.ic_translate)
+            setBackgroundResource(R.drawable.bubble_bg)
+            val padding = dp(13)
+            setPadding(padding, padding, padding, padding)
+            alpha = IDLE_ALPHA
+            contentDescription = context.getString(R.string.service_label)
+            setOnTouchListener(BubbleTouchListener())
+        }
+        val screen = screenSize()
+        bubbleParams.x = Prefs.bubbleX(service, screen.x - bubbleSize)
+        bubbleParams.y = Prefs.bubbleY(service, screen.y / 3)
+        clampBubble(screen)
+        if (addWindow(view, bubbleParams)) {
+            bubble = view
+            AppLog.i("Кружок показан")
+        }
+    }
+
+    fun hideBubble() {
+        snapAnimator?.cancel()
+        removeDragViews()
+        dismissPopup()
+        bubble?.let { removeWindow(it) }
+        if (bubble != null) AppLog.i("Кружок убран")
+        bubble = null
+    }
+
+    fun onScreenChanged() {
+        val view = bubble ?: return
+        dismissPopup()
+        clampBubble(screenSize())
+        windowManager.updateViewLayout(view, bubbleParams)
+    }
+
+    fun destroy() {
+        translateJob?.cancel()
+        hideBubble()
+        scope.cancel()
+    }
+
+    private fun clampBubble(screen: Point) {
+        bubbleParams.x = bubbleParams.x.coerceIn(0, maxOf(0, screen.x - bubbleSize))
+        bubbleParams.y = bubbleParams.y.coerceIn(dp(24), maxOf(dp(24), screen.y - bubbleSize - dp(24)))
+    }
+
+    /** После отпускания кружок отъезжает к ближайшему краю, чтобы не закрывать текст. */
+    private fun snapToEdge() {
+        val view = bubble ?: return
+        val screen = screenSize()
+        clampBubble(screen)
+        val centerX = bubbleParams.x + bubbleSize / 2
+        val targetX = if (centerX < screen.x / 2) 0 else screen.x - bubbleSize
+        snapAnimator?.cancel()
+        snapAnimator = ValueAnimator.ofInt(bubbleParams.x, targetX).apply {
+            duration = 220
+            interpolator = DecelerateInterpolator()
+            addUpdateListener {
+                if (bubble == null) return@addUpdateListener
+                bubbleParams.x = it.animatedValue as Int
+                runCatching { windowManager.updateViewLayout(view, bubbleParams) }
+            }
+            start()
+        }
+        Prefs.saveBubblePosition(service, targetX, bubbleParams.y)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private inner class BubbleTouchListener : View.OnTouchListener {
+        private var downX = 0f
+        private var downY = 0f
+        private var startX = 0
+        private var startY = 0
+        private var dragging = false
+
+        override fun onTouch(view: View, event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    snapAnimator?.cancel()
+                    downX = event.rawX
+                    downY = event.rawY
+                    startX = bubbleParams.x
+                    startY = bubbleParams.y
+                    dragging = false
+                    view.alpha = 1f
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downX
+                    val dy = event.rawY - downY
+                    if (!dragging && hypot(dx, dy) > touchSlop) {
+                        dragging = true
+                        startDrag()
+                    }
+                    if (dragging) {
+                        bubbleParams.x = startX + dx.roundToInt()
+                        bubbleParams.y = startY + dy.roundToInt()
+                        windowManager.updateViewLayout(view, bubbleParams)
+                        updateDragViews()
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    view.alpha = IDLE_ALPHA
+                    if (dragging) endDrag(cancelled = false) else onBubbleTap()
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    view.alpha = IDLE_ALPHA
+                    if (dragging) endDrag(cancelled = true)
+                }
+            }
+            return true
+        }
+    }
+
+    private fun onBubbleTap() {
+        // Касание кружка уже закрыло карточку (как касание вне её) — второй раз не открываем.
+        if (SystemClock.uptimeMillis() - lastOutsideDismiss < 600) return
+        if (popup != null) {
+            dismissPopup()
+            return
+        }
+        val anchor = Rect(bubbleParams.x, bubbleParams.y, bubbleParams.x + bubbleSize, bubbleParams.y + bubbleSize)
+        anchor.offset(windowOffset.x, windowOffset.y)
+        showPopup(anchor).showMessage(context.getString(R.string.bubble_tap_hint))
+    }
+
+    // ---------- Перетаскивание: прицел и крестик ----------
+
+    private fun startDrag() {
+        dismissPopup()
+        val aim = CrosshairView(context)
+        val close = CloseZoneView(context)
+        val screen = screenSize()
+        closeParams.x = (screen.x - closeSize) / 2
+        closeParams.y = screen.y - closeSize - dp(56)
+        positionCrosshair()
+        if (addWindow(close, closeParams)) closeZone = close
+        if (addWindow(aim, crosshairParams)) crosshair = aim
+    }
+
+    private fun updateDragViews() {
+        crosshair?.let {
+            positionCrosshair()
+            windowManager.updateViewLayout(it, crosshairParams)
+        }
+        closeZone?.active = isOverCloseZone()
+    }
+
+    /** Прицел стоит над кружком, чтобы палец не закрывал текст. */
+    private fun positionCrosshair() {
+        val centerX = bubbleParams.x + bubbleSize / 2
+        val aimY = bubbleParams.y + bubbleSize / 2 - dp(AIM_OFFSET_DP)
+        crosshairParams.x = centerX - aimSize / 2
+        crosshairParams.y = aimY - aimSize / 2
+    }
+
+    private fun isOverCloseZone(): Boolean {
+        if (closeZone == null) return false
+        val bx = bubbleParams.x + bubbleSize / 2f
+        val by = bubbleParams.y + bubbleSize / 2f
+        val cx = closeParams.x + closeSize / 2f
+        val cy = closeParams.y + closeSize / 2f
+        return hypot(bx - cx, by - cy) < dp(80)
+    }
+
+    private fun endDrag(cancelled: Boolean) {
+        val overClose = isOverCloseZone()
+        val aim = aimPointOnScreen()
+        updateWindowOffset()
+        removeDragViews()
+        when {
+            cancelled -> snapToEdge()
+            overClose -> {
+                hideBubble()
+                Prefs.setBubbleEnabled(service, false)
+                Toast.makeText(service, R.string.bubble_closed, Toast.LENGTH_LONG).show()
+            }
+            else -> {
+                snapToEdge()
+                translateAt(aim.x, aim.y)
+            }
+        }
+    }
+
+    private fun aimPointOnScreen(): Point {
+        val view = crosshair
+        if (view != null && view.isAttachedToWindow) {
+            val location = IntArray(2)
+            view.getLocationOnScreen(location)
+            return Point(location[0] + aimSize / 2, location[1] + aimSize / 2)
+        }
+        return Point(crosshairParams.x + aimSize / 2, crosshairParams.y + aimSize / 2)
+    }
+
+    private fun updateWindowOffset() {
+        val view = bubble ?: return
+        if (!view.isAttachedToWindow) return
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        windowOffset.set(location[0] - bubbleParams.x, location[1] - bubbleParams.y)
+    }
+
+    private fun removeDragViews() {
+        crosshair?.let { removeWindow(it) }
+        crosshair = null
+        closeZone?.let { removeWindow(it) }
+        closeZone = null
+    }
+
+    // ---------- Перевод ----------
+
+    private fun translateAt(x: Int, y: Int) {
+        translateJob?.cancel()
+        dismissPopup()
+        translateJob = scope.launch {
+            val found = try {
+                withContext(Dispatchers.Default) { ScreenTextFinder.find(service, x, y) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.e("Ошибка при поиске текста", e)
+                null
+            }
+            if (found == null) {
+                AppLog.i("Текст не найден в точке ($x, $y)")
+                showPopup(Rect(x - 1, y - 1, x + 1, y + 1)).showMessage(context.getString(R.string.no_text_found))
+                return@launch
+            }
+            AppLog.i("Найден текст в ${found.packageName}: ${found.text.length} симв.")
+            val card = showPopup(found.bounds)
+            showHighlight(found.bounds)
+            card.showStatus(context.getString(R.string.translating))
+            try {
+                val result = App.engine.translate(found.text) { status -> card.showStatus(status) }
+                card.showResult(result)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.e("Ошибка перевода", e)
+                card.showMessage(context.getString(R.string.translate_error, e.message ?: e.javaClass.simpleName))
+            }
+        }
+    }
+
+    private fun showHighlight(bounds: Rect) {
+        removeHighlight()
+        val pad = dp(3)
+        val params = overlayParams(bounds.width() + pad * 2, bounds.height() + pad * 2, touchable = false).apply {
+            x = bounds.left - pad - windowOffset.x
+            y = bounds.top - pad - windowOffset.y
+        }
+        val view = HighlightView(context)
+        if (addWindow(view, params)) highlight = view
+    }
+
+    private fun removeHighlight() {
+        highlight?.let { removeWindow(it) }
+        highlight = null
+    }
+
+    // ---------- Карточка с переводом ----------
+
+    private fun showPopup(anchor: Rect): Popup {
+        closePopupWindows()
+        val card = Popup(anchor)
+        popup = card
+        return card
+    }
+
+    /** Закрыть карточку и остановить перевод, если он ещё идёт. */
+    private fun dismissPopup() {
+        translateJob?.cancel()
+        closePopupWindows()
+    }
+
+    private fun closePopupWindows() {
+        popup?.remove()
+        popup = null
+        removeHighlight()
+    }
+
+    /** Карточка рядом с текстом. Закрывается касанием в любом другом месте экрана. */
+    @SuppressLint("ClickableViewAccessibility")
+    private inner class Popup(private val anchor: Rect) {
+        private val root = LayoutInflater.from(context).inflate(R.layout.popup_translation, null)
+        private val scroll = root.findViewById<MaxHeightScrollView>(R.id.popupScroll)
+        private val translation = root.findViewById<TextView>(R.id.popupTranslation)
+        private val original = root.findViewById<TextView>(R.id.popupOriginal)
+        private val language = root.findViewById<TextView>(R.id.popupLang)
+        private val btnOriginal = root.findViewById<Button>(R.id.popupBtnOriginal)
+        private val btnCopy = root.findViewById<Button>(R.id.popupBtnCopy)
+        private val btnClose = root.findViewById<Button>(R.id.popupBtnClose)
+
+        private val params: WindowManager.LayoutParams
+        private var attached = false
+
+        init {
+            val screen = screenSize()
+            val width = minOf(screen.x - dp(24), dp(520))
+            params = overlayParams(width, WindowManager.LayoutParams.WRAP_CONTENT, touchable = true).apply {
+                flags = flags or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
+                x = (screen.x - width) / 2 - windowOffset.x
+            }
+            scroll.maxHeightPx = (screen.y * 0.45f).toInt()
+
+            root.setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+                    if (popup === this) {
+                        lastOutsideDismiss = SystemClock.uptimeMillis()
+                        dismissPopup()
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            btnClose.setOnClickListener { if (popup === this) dismissPopup() }
+            btnOriginal.setOnClickListener {
+                val show = original.visibility != View.VISIBLE
+                original.visibility = if (show) View.VISIBLE else View.GONE
+                btnOriginal.setText(if (show) R.string.popup_hide_original else R.string.popup_original)
+                reposition()
+            }
+            btnCopy.setOnClickListener {
+                val clipboard = service.getSystemService(ClipboardManager::class.java)
+                clipboard.setPrimaryClip(ClipData.newPlainText("Перевод", translation.text))
+                Toast.makeText(service, R.string.popup_copied, Toast.LENGTH_SHORT).show()
+            }
+            btnOriginal.visibility = View.GONE
+            btnCopy.visibility = View.GONE
+            attached = addWindow(root, params.also { it.y = placeY(measureHeight()) })
+        }
+
+        fun showStatus(text: String) {
+            translation.text = text
+            translation.alpha = 0.7f
+            reposition()
+        }
+
+        fun showMessage(text: String) {
+            translation.text = text
+            translation.alpha = 1f
+            btnOriginal.visibility = View.GONE
+            btnCopy.visibility = View.GONE
+            language.visibility = View.GONE
+            reposition()
+        }
+
+        fun showResult(result: TranslationEngine.Result) {
+            translation.alpha = 1f
+            if (result.alreadyTarget) {
+                translation.text = context.getString(R.string.already_russian)
+                original.text = result.original
+                original.visibility = View.VISIBLE
+                reposition()
+                return
+            }
+            translation.text = result.translated
+            original.text = result.original
+            language.text = "${TranslationEngine.languageName(result.sourceLanguage)} → русский · на телефоне"
+            language.visibility = View.VISIBLE
+            btnOriginal.visibility = View.VISIBLE
+            btnCopy.visibility = View.VISIBLE
+            reposition()
+        }
+
+        fun remove() {
+            if (attached) removeWindow(root)
+            attached = false
+        }
+
+        private fun measureHeight(): Int {
+            root.measure(
+                View.MeasureSpec.makeMeasureSpec(params.width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+            )
+            return root.measuredHeight
+        }
+
+        private fun reposition() {
+            if (!attached) return
+            params.y = placeY(measureHeight())
+            runCatching { windowManager.updateViewLayout(root, params) }
+        }
+
+        /** Под текстом, если там хватает места, иначе над ним, иначе у края экрана. */
+        private fun placeY(height: Int): Int {
+            val screenHeight = screenSize().y
+            val margin = dp(12)
+            val top = margin + dp(24)
+            val y = when {
+                anchor.bottom + margin + height <= screenHeight - margin -> anchor.bottom + margin
+                anchor.top - margin - height >= top -> anchor.top - margin - height
+                anchor.centerY() < screenHeight / 2 -> screenHeight - margin - height
+                else -> top
+            }
+            return y.coerceIn(0, maxOf(0, screenHeight - height)) - windowOffset.y
+        }
+    }
+
+    // ---------- Окна ----------
+
+    private fun overlayParams(width: Int, height: Int, touchable: Boolean) = WindowManager.LayoutParams(
+        width,
+        height,
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            (if (touchable) 0 else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE),
+        PixelFormat.TRANSLUCENT,
+    ).apply {
+        gravity = Gravity.TOP or Gravity.START
+        layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+        } else {
+            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+    }
+
+    private fun addWindow(view: View, params: WindowManager.LayoutParams): Boolean = try {
+        windowManager.addView(view, params)
+        true
+    } catch (e: Exception) {
+        AppLog.e("Не удалось показать окно поверх приложений", e)
+        false
+    }
+
+    private fun removeWindow(view: View) {
+        runCatching { windowManager.removeView(view) }
+            .onFailure { AppLog.e("Не удалось убрать окно", it) }
+    }
+
+    private fun screenSize(): Point {
+        val display = service.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)
+        val size = Point()
+        @Suppress("DEPRECATION")
+        display.getRealSize(size)
+        return size
+    }
+
+    private fun dp(value: Int) = (value * density).roundToInt()
+
+    companion object {
+        private const val BUBBLE_DP = 52
+        private const val AIM_DP = 40
+        private const val AIM_OFFSET_DP = 72
+        private const val CLOSE_DP = 72
+        private const val IDLE_ALPHA = 0.85f
+    }
+}

@@ -1,0 +1,30 @@
+<resources>
+    <style name="Theme.Tongway" parent="Theme.Material3.DayNight">
+        <item name="colorPrimary">@color/brand</item>
+        <item name="colorSecondary">@color/brand_dark</item>
+    </style>
+
+    <style name="Tongway.SectionTitle">
+        <item name="android:textSize">18sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:layout_marginTop">20dp</item>
+    </style>
+
+    <style name="Tongway.Hint">
+        <item name="android:textSize">14sp</item>
+        <item name="android:layout_marginTop">4dp</item>
+        <item name="android:alpha">0.8</item>
+    </style>
+
+    <style name="Tongway.Status">
+        <item name="android:textSize">15sp</item>
+        <item name="android:layout_marginTop">8dp</item>
+    </style>
+
+    <style name="Tongway.PopupButton" parent="Widget.Material3.Button.TextButton">
+        <item name="android:textSize">13sp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:paddingStart">10dp</item>
+        <item name="android:paddingEnd">10dp</item>
+    </style>
+</resources>

@@ -1,0 +1,47 @@
+name: Сборка APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Собрать APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Подготовить файл
+        run: cp app/build/outputs/apk/debug/app-debug.apk tongway.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tongway-${{ github.run_number }}
+          path: tongway.apk
+
+      - name: Выложить в «Последнюю сборку»
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest tongway.apk \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --title "Последняя сборка №${{ github.run_number }}" \
+            --notes "Версия 0.1.${{ github.run_number }}. Ветка ${{ github.ref_name }}, коммит ${{ github.sha }}. Скачайте tongway.apk и установите."
