@@ -67,6 +67,12 @@
     <string name="translating">Перевожу…</string>
     <string name="no_text_found">Здесь не нашлось текста. Попробуйте навести прицел точнее — прямо на строчку.</string>
     <string name="ocr_working">Распознаю текст на картинке…</string>
+    <string name="scan_working">Сканирую экран…</string>
+    <string name="scan_found">Найдено абзацев: %1$d</string>
+    <string name="page_whole">Весь текст</string>
+    <string name="page_plates">Поверх фото</string>
+    <string name="page_progress">Перевожу весь текст… %1$d из %2$d</string>
+    <string name="page_label">Весь текст: %1$d абз.</string>
     <string name="ocr_nothing">на снимке экрана не нашлось латинских букв</string>
     <string name="ocr_problem">Распознавание с картинки: %1$s.</string>
     <string name="already_russian">Этот текст уже на русском.</string>

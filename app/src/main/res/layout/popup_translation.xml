@@ -112,6 +112,33 @@
         </LinearLayout>
     </com.tongway.translator.overlay.MaxHeightScrollView>
 
+    <!-- Текст с картинки: перевести всю страницу или наложить перевод на фото. -->
+    <LinearLayout
+        android:id="@+id/popupPageRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/popupBtnPage"
+            style="@style/Tongway.PillSmall"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/page_whole" />
+
+        <TextView
+            android:id="@+id/popupBtnPlates"
+            style="@style/Tongway.PillSmall.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="@string/page_plates" />
+    </LinearLayout>
+
     <!-- Меню по касанию кружка. -->
     <LinearLayout
         android:id="@+id/popupMenu"

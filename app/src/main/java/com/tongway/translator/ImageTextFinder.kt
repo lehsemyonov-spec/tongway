@@ -22,8 +22,8 @@ import kotlin.math.hypot
  */
 object ImageTextFinder {
 
-    /** Кусок текста, найденный на снимке, в координатах экрана. */
-    data class Block(val text: String, val bounds: Rect)
+    /** Кусок текста, найденный на снимке, в координатах экрана; lineHeight — средняя высота строки. */
+    data class Block(val text: String, val bounds: Rect, val lineHeight: Int = 0)
 
     /** Результат снимка: картинка или понятная причина, почему не вышло. */
     sealed class Capture {
@@ -70,13 +70,64 @@ object ImageTextFinder {
             )
         }
 
+    /** Распознаёт текст и собирает его в абзацы по порядку чтения. */
     suspend fun recognize(bitmap: Bitmap): List<Block> {
         val text = recognizer.process(InputImage.fromBitmap(bitmap, 0)).await()
-        return text.textBlocks.mapNotNull { block ->
+        val raw = text.textBlocks.mapNotNull { block ->
             val bounds = block.boundingBox ?: return@mapNotNull null
             val joined = joinLines(block.lines)
-            if (joined.length < 2 || joined.none { it.isLetter() }) null else Block(joined, bounds)
+            val heights = block.lines.mapNotNull { it.boundingBox?.height() }
+            val lineHeight = if (heights.isEmpty()) bounds.height() else heights.sum() / heights.size
+            if (joined.length < 2 || joined.none { it.isLetter() }) null else Block(joined, bounds, lineHeight)
         }
+        return toParagraphs(dropEdgeScraps(raw, bitmap.width), bitmap.width)
+    }
+
+    /**
+     * Обрывки у левого или правого края кадра (например, соседняя страница книги на фото):
+     * короткие и узкие куски, прижатые к краю, отбрасываем.
+     */
+    private fun dropEdgeScraps(blocks: List<Block>, width: Int): List<Block> {
+        val edge = (width * 0.03f).toInt()
+        return blocks.filterNot { b ->
+            val atEdge = b.bounds.left <= edge || b.bounds.right >= width - edge
+            atEdge && (b.text.length < 25 || b.bounds.width() < width * 0.15f)
+        }
+    }
+
+    /**
+     * Распознавание иногда режет абзац на куски. Склеиваем соседние куски, если они стоят
+     * в одной колонке, между ними почти нет зазора и предыдущий не кончается точкой.
+     */
+    private fun toParagraphs(blocks: List<Block>, width: Int): List<Block> {
+        val sorted = blocks.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
+        val out = mutableListOf<Block>()
+        for (block in sorted) {
+            val last = out.lastOrNull()
+            if (last != null && belongTogether(last, block, width)) {
+                val bounds = Rect(last.bounds).apply { union(block.bounds) }
+                val glue = if (last.text.endsWith("-")) "" else " "
+                val text = last.text.removeSuffix("-") + glue + block.text
+                out[out.size - 1] = Block(text, bounds, (last.lineHeight + block.lineHeight) / 2)
+            } else {
+                out.add(block)
+            }
+        }
+        return out
+    }
+
+    private fun belongTogether(upper: Block, lower: Block, width: Int): Boolean {
+        val line = maxOf(upper.lineHeight, lower.lineHeight, 1)
+        val gap = lower.bounds.top - upper.bounds.bottom
+        if (gap > line * 0.9f || gap < -line) return false
+        val overlap = minOf(upper.bounds.right, lower.bounds.right) - maxOf(upper.bounds.left, lower.bounds.left)
+        val narrower = minOf(upper.bounds.width(), lower.bounds.width())
+        if (narrower <= 0 || overlap < narrower * 0.6f) return false
+        if (kotlin.math.abs(upper.bounds.left - lower.bounds.left) > width * 0.08f &&
+            kotlin.math.abs(upper.bounds.right - lower.bounds.right) > width * 0.08f
+        ) return false
+        val end = upper.text.trimEnd().lastOrNull() ?: return false
+        return end !in ".!?:;\"»”"
     }
 
     /** Абзац под прицелом; если прицел чуть промахнулся — ближайший в пределах slop пикселей. */
