@@ -217,7 +217,12 @@ class MainActivity : AppCompatActivity() {
                         progress.fraction?.let { testResult.text = "Скачиваю словарь… ${(it * 100).roundToInt()}%" }
                     },
                 )
-                testResult.text = if (result.alreadyTarget) getString(R.string.already_russian) else result.translated
+                testResult.text = if (result.alreadyTarget) {
+                    getString(R.string.already_russian)
+                } else {
+                    result.translated + "\n\n— " + result.provider +
+                        (result.note?.let { "\n" + getString(R.string.cloud_fallback, it) } ?: "")
+                }
                 refreshModel()
             } catch (e: CancellationException) {
                 throw e

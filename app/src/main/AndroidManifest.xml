@@ -42,7 +42,13 @@
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
-            android:label="@string/settings_title" />
+            android:label="@string/settings_title"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".KeyHelpActivity"
+            android:exported="false"
+            android:label="@string/key_help" />
 
         <service
             android:name=".BubbleTileService"

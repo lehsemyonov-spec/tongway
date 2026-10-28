@@ -112,7 +112,9 @@ class HistoryActivity : AppCompatActivity() {
         override fun onBindViewHolder(holder: Holder, position: Int) {
             val entry = items[position]
             val time = DateUtils.getRelativeTimeSpanString(entry.time, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS)
-            holder.meta.text = if (entry.appName.isBlank()) time else "${entry.appName} · $time"
+            holder.meta.text = listOf(entry.appName, time.toString(), entry.provider)
+                .filter { it.isNotBlank() }
+                .joinToString(" · ")
             holder.translation.text = entry.translated
             holder.original.text = entry.original
             holder.itemView.setOnClickListener { copy(entry) }

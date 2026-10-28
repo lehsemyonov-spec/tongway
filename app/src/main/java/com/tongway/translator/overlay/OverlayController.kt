@@ -408,7 +408,7 @@ class OverlayController(private val service: AccessibilityService) {
                 )
                 card.showResult(result)
                 if (!result.alreadyTarget) {
-                    HistoryStore.add(service, result.original, result.translated, appLabel(found.packageName))
+                    HistoryStore.add(service, result.original, result.translated, appLabel(found.packageName), result.provider)
                 }
                 // На картинке больше одного абзаца — предлагаем весь текст или перевод поверх фото.
                 if (page.size > 1) card.offerPage(page, found.packageName)
@@ -486,11 +486,13 @@ class OverlayController(private val service: AccessibilityService) {
         val dna = bar.findViewById<MechanicalDnaView>(R.id.barDna)
         bubble?.busy = true
         try {
-            pieces.forEachIndexed { index, (text, _) ->
-                status.text = context.getString(R.string.screen_progress, index, pieces.size)
-                overlay.setTranslation(index, App.engine.translateEnglish(text))
-            }
-            status.text = context.getString(R.string.screen_done, pieces.size)
+            val outcome = App.engine.translateMany(
+                pieces.map { it.first },
+                onStatus = { status.text = it },
+                onEach = { index, text -> overlay.setTranslation(index, text) },
+            )
+            status.text = context.getString(R.string.screen_done, pieces.size) +
+                "\n" + outcome.provider + (outcome.note?.let { " · $it" } ?: "")
             bar.findViewById<View>(R.id.barCopy).visibility = View.VISIBLE
         } catch (e: CancellationException) {
             throw e
@@ -513,14 +515,24 @@ class OverlayController(private val service: AccessibilityService) {
             card.prepareForPage()
             bubble?.busy = true
             try {
-                val translated = english.mapIndexed { index, block ->
-                    card.showStatus(context.getString(R.string.page_progress, index + 1, english.size))
-                    App.engine.translateEnglish(block.text)
-                }
+                card.showStatus(context.getString(R.string.page_progress, 0, english.size))
+                val translated = arrayOfNulls<String>(english.size)
+                val outcome = App.engine.translateMany(
+                    english.map { it.text },
+                    onStatus = { card.showStatus(it) },
+                    onEach = { index, text -> translated[index] = text },
+                )
                 val original = english.joinToString("\n\n") { it.text }
-                val result = TranslationEngine.Result(original, translated.joinToString("\n\n"), "en", alreadyTarget = false)
+                val result = TranslationEngine.Result(
+                    original,
+                    translated.joinToString("\n\n") { it.orEmpty() },
+                    "en",
+                    alreadyTarget = false,
+                    provider = outcome.provider,
+                    note = outcome.note,
+                )
                 card.showResult(result)
-                HistoryStore.add(service, result.original, result.translated, appLabel(packageName))
+                HistoryStore.add(service, result.original, result.translated, appLabel(packageName), result.provider)
                 AppLog.i("Весь текст с картинки переведён: ${english.size} абз.")
             } catch (e: CancellationException) {
                 throw e
@@ -748,6 +760,7 @@ class OverlayController(private val service: AccessibilityService) {
         private val btnClose = root.findViewById<TextView>(R.id.popupBtnClose)
         private val menu = root.findViewById<View>(R.id.popupMenu)
         private val pageRow = root.findViewById<View>(R.id.popupPageRow)
+        private val note = root.findViewById<TextView>(R.id.popupNote)
 
         private val params: WindowManager.LayoutParams
         private var attached = false
@@ -858,8 +871,11 @@ class OverlayController(private val service: AccessibilityService) {
                 return
             }
             translation.text = result.translated
-            language.text = "${result.sourceLanguage.uppercase()} → RU"
+            language.text = "${result.sourceLanguage.uppercase()} → RU · ${result.provider}"
             language.visibility = View.VISIBLE
+            // Облако не ответило — честно пишем, почему перевод сделан на телефоне.
+            note.text = result.note?.let { context.getString(R.string.cloud_fallback, it) }
+            note.visibility = if (result.note != null) View.VISIBLE else View.GONE
             setActionsVisible(true)
             reposition()
         }

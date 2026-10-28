@@ -16,8 +16,9 @@ import kotlinx.coroutines.tasks.await
 import java.util.Locale
 
 /**
- * Перевод прямо на телефоне через Google ML Kit.
- * Вызывать с главного потока: переводчики хранятся без блокировок.
+ * Перевод: нейросетью через OpenRouter (если выбрано и есть ключ) или прямо на телефоне
+ * через Google ML Kit. Если облако не ответило, всегда переводим на телефоне и пишем почему.
+ * Вызывать с главного потока: переводчики и память переводов хранятся без блокировок.
  */
 class TranslationEngine(private val context: Context) {
 
@@ -26,7 +27,19 @@ class TranslationEngine(private val context: Context) {
         val translated: String,
         val sourceLanguage: String,
         val alreadyTarget: Boolean,
+        /** Кто перевёл: «OpenRouter» или «на телефоне». */
+        val provider: String = PROVIDER_PHONE,
+        /** Почему не получилось через облако, если пришлось переводить на телефоне. */
+        val note: String? = null,
     )
+
+    /** Итог перевода нескольких кусков. */
+    data class Outcome(val provider: String, val note: String?)
+
+    /** Память переводов нейросети: повторный перевод того же текста не тратит запрос. */
+    private val cloudCache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?) = size > 400
+    }
 
     private val languageId = LanguageIdentification.getClient(
         // Короткие фразы часто определяются неуверенно; тогда считаем текст английским,
@@ -94,6 +107,21 @@ class TranslationEngine(private val context: Context) {
         val source = TranslateLanguage.ENGLISH
         if (tag != UNDETERMINED && tag != source) AppLog.i("Язык определён как «$tag», перевожу как английский")
 
+        var note: String? = null
+        if (cloudReady()) {
+            cloudCache[text]?.let { return Result(text, it, source, alreadyTarget = false, provider = PROVIDER_CLOUD) }
+            try {
+                onStatus("Перевожу нейросетью…")
+                val key = SecretStore.apiKey(context)!!
+                val translated = withModel { model -> OpenRouterClient.translateOne(key, model, text) }
+                cloudCache[text] = translated
+                return Result(text, translated, source, alreadyTarget = false, provider = PROVIDER_CLOUD)
+            } catch (e: OpenRouterClient.CloudException) {
+                AppLog.i("OpenRouter не перевёл: ${e.reason}, перевожу на телефоне")
+                note = "OpenRouter: ${e.reason}"
+            }
+        }
+
         if (!isModelDownloaded(source) || !isModelDownloaded(TARGET)) {
             onStatus("Скачиваю словарь: ${languageName(source)} → русский (около 30 МБ, один раз)…")
             AppLog.i("Скачиваю словарь для «$source»")
@@ -108,7 +136,114 @@ class TranslationEngine(private val context: Context) {
         val translated = text.split('\n').map { line ->
             if (line.isBlank()) line else translator.translate(line).await()
         }.joinToString("\n")
-        return Result(text, translated, source, alreadyTarget = false)
+        return Result(text, translated, source, alreadyTarget = false, note = note)
+    }
+
+    /**
+     * Перевод многих кусков (весь экран, вся страница). Нейросети они уходят одним запросом
+     * (длинное — несколькими по ~6000 символов). onEach сообщает готовый кусок сразу.
+     */
+    suspend fun translateMany(
+        texts: List<String>,
+        onStatus: (String) -> Unit,
+        onEach: (Int, String) -> Unit,
+    ): Outcome {
+        val done = BooleanArray(texts.size)
+        texts.forEachIndexed { i, text ->
+            val ready = if (looksCyrillic(text)) text else if (cloudReady()) cloudCache[text] else null
+            if (ready != null) {
+                done[i] = true
+                onEach(i, ready)
+            }
+        }
+        var note: String? = null
+        var usedCloud = false
+        val pending = texts.indices.filter { !done[it] }
+        if (pending.isNotEmpty() && cloudReady()) {
+            try {
+                val key = SecretStore.apiKey(context)!!
+                for (chunk in chunks(pending.map { it to texts[it] })) {
+                    onStatus("Перевожу нейросетью: ${chunk.size} кусков одним запросом…")
+                    val out = withModel { model -> OpenRouterClient.translateMany(key, model, chunk.map { it.second }) }
+                    chunk.forEachIndexed { j, (index, original) ->
+                        cloudCache[original] = out[j]
+                        done[index] = true
+                        onEach(index, out[j])
+                    }
+                    usedCloud = true
+                }
+            } catch (e: OpenRouterClient.CloudException) {
+                AppLog.i("OpenRouter не перевёл ${pending.size} кусков: ${e.reason}, перевожу на телефоне")
+                note = "OpenRouter: ${e.reason}"
+            }
+        }
+        val rest = texts.indices.filter { !done[it] }
+        rest.forEachIndexed { n, index ->
+            onStatus("Перевожу на телефоне… ${n + 1} из ${rest.size}")
+            onEach(index, translateEnglish(texts[index]))
+        }
+        val provider = if (usedCloud && rest.isEmpty()) PROVIDER_CLOUD else PROVIDER_PHONE
+        return Outcome(provider, note)
+    }
+
+    /** Проверка ключа: переводит короткую фразу. Возвращает перевод и модель. */
+    suspend fun checkCloud(key: String): Pair<String, String> {
+        var used = ""
+        val text = withModel { model ->
+            used = model
+            OpenRouterClient.translateOne(key, model, "The weather is lovely today, let's go for a walk.")
+        }
+        return text to used
+    }
+
+    private fun cloudReady(): Boolean =
+        Prefs.provider(context) == Prefs.PROVIDER_OPENROUTER && !SecretStore.apiKey(context).isNullOrBlank()
+
+    /**
+     * Выполняет запрос с выбранной моделью. Если модель выбирается автоматически и она пропала
+     * из бесплатных, берём другую и пробуем ещё раз.
+     */
+    private suspend fun <T> withModel(block: suspend (String) -> T): T {
+        val manual = Prefs.model(context)
+        val model = manual.ifEmpty { autoModel(refresh = false) }
+        Prefs.addUsage(context)
+        return try {
+            block(model)
+        } catch (e: OpenRouterClient.CloudException) {
+            if (!e.modelMissing || manual.isNotEmpty()) throw e
+            AppLog.i("Модель $model недоступна, выбираю другую")
+            val other = autoModel(refresh = true, exclude = model)
+            Prefs.addUsage(context)
+            block(other)
+        }
+    }
+
+    /** Бесплатная модель для перевода; список обновляется раз в сутки. */
+    private suspend fun autoModel(refresh: Boolean, exclude: String? = null): String {
+        val (cached, time) = Prefs.autoModel(context)
+        if (!refresh && cached.isNotEmpty() && System.currentTimeMillis() - time < DAY_MS) return cached
+        val models = runCatching { OpenRouterClient.freeModels() }
+            .getOrElse { throw OpenRouterClient.CloudException("не удалось получить список моделей") }
+            .filter { it.id != exclude }
+        val pick = OpenRouterClient.pickDefault(models)
+            ?: throw OpenRouterClient.CloudException("нет доступных бесплатных моделей")
+        AppLog.i("Автовыбор модели OpenRouter: ${pick.id} (бесплатных моделей: ${models.size})")
+        Prefs.setAutoModel(context, pick.id)
+        return pick.id
+    }
+
+    private fun chunks(items: List<Pair<Int, String>>): List<List<Pair<Int, String>>> {
+        val out = mutableListOf<MutableList<Pair<Int, String>>>()
+        var size = 0
+        for (item in items) {
+            if (out.isEmpty() || size + item.second.length > CHUNK_CHARS) {
+                out.add(mutableListOf())
+                size = 0
+            }
+            out.last().add(item)
+            size += item.second.length
+        }
+        return out
     }
 
     /**
@@ -139,6 +274,10 @@ class TranslationEngine(private val context: Context) {
     companion object {
         const val TARGET = TranslateLanguage.RUSSIAN
         private const val UNDETERMINED = "und"
+        const val PROVIDER_CLOUD = "OpenRouter"
+        const val PROVIDER_PHONE = "на телефоне"
+        private const val CHUNK_CHARS = 6000
+        private const val DAY_MS = 24L * 60 * 60 * 1000
 
         fun languageName(code: String): String =
             Locale(code).getDisplayLanguage(Locale("ru")).ifBlank { code }

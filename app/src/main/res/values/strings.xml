@@ -114,6 +114,41 @@
     <string name="delete">Удалить</string>
     <string name="cancel">Отмена</string>
 
+    <!-- Переводчик -->
+    <string name="translator_title">Переводчик</string>
+    <string name="provider_phone">На телефоне</string>
+    <string name="provider_cloud">Нейросеть</string>
+    <string name="provider_phone_hint">Перевод прямо на телефоне: без интернета и без ограничений, но попроще.</string>
+    <string name="provider_cloud_hint">Нейросеть через OpenRouter: переводит заметно лучше, нужен интернет и свой бесплатный ключ. Если не ответит — переведём на телефоне.</string>
+    <string name="key_label">Ключ OpenRouter</string>
+    <string name="key_show">Показать</string>
+    <string name="key_hide">Скрыть</string>
+    <string name="key_paste">Вставить ключ</string>
+    <string name="key_pasted">Ключ вставлен</string>
+    <string name="key_clipboard_empty">В буфере обмена нет ключа. Скопируйте его на сайте OpenRouter.</string>
+    <string name="key_help">Как получить ключ</string>
+    <string name="key_check">Проверить</string>
+    <string name="key_checking">Проверяю…</string>
+    <string name="key_missing">Сначала вставьте ключ.</string>
+    <string name="key_ok">✓ Работает!\n%1$s\nМодель: %2$s</string>
+    <string name="key_fail">✕ Не работает: %1$s</string>
+    <string name="model_auto">Модель: выбирается автоматически%1$s</string>
+    <string name="model_manual">Модель: %1$s</string>
+    <string name="model_choose">Выбрать</string>
+    <string name="model_loading">Загружаю список бесплатных моделей…</string>
+    <string name="model_list_title">Бесплатная модель</string>
+    <string name="model_auto_item">Автоматически (советую)</string>
+    <string name="model_list_error">Не удалось загрузить список моделей: %1$s</string>
+    <string name="usage_today">Сегодня запросов к нейросети: %1$d (бесплатно около 50 в день)</string>
+    <string name="cloud_privacy">При переводе нейросетью текст отправляется в OpenRouter. Для личной переписки лучше выбрать «На телефоне».</string>
+    <string name="cloud_fallback">Переведено на телефоне — %1$s</string>
+
+    <!-- Как получить ключ -->
+    <string name="help_title">Ключ</string>
+    <string name="help_subtitle">Бесплатно, около минуты. Карта не нужна.</string>
+    <string name="help_steps">1. Нажмите «Открыть OpenRouter» ниже.\n\n2. Войдите: «Sign in» → через Google-аккаунт или почту.\n\n3. На странице «Keys» нажмите «Create Key» (или «Create API Key»), введите любое название, например Tongway, и нажмите «Create».\n\n4. Скопируйте появившийся ключ — он начинается на sk-or-. Сайт покажет его только один раз, сохраните его в заметках.\n\n5. Вернитесь в Tongway → «Настройки» → «Переводчик» → «Нейросеть» и нажмите «Вставить ключ», затем «Проверить».\n\nНикому не пересылайте ключ. Если он утёк — удалите его на сайте и создайте новый.\n\nБесплатно около 50 запросов в день. Один абзац — один запрос, весь экран или вся страница — тоже один.</string>
+    <string name="help_open">Открыть OpenRouter</string>
+
     <!-- Настройки -->
     <string name="settings_title">Настройки</string>
     <string name="settings_hint">Изменения сразу применяются к кружку.</string>

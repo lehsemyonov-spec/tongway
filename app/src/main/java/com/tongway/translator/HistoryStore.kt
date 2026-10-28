@@ -13,6 +13,7 @@ object HistoryStore {
         val original: String,
         val translated: String,
         val appName: String,
+        val provider: String = "",
     )
 
     private const val MAX_ENTRIES = 300
@@ -22,12 +23,12 @@ object HistoryStore {
     fun all(context: Context): List<Entry> = load(context).toList()
 
     @Synchronized
-    fun add(context: Context, original: String, translated: String, appName: String) {
+    fun add(context: Context, original: String, translated: String, appName: String, provider: String = "") {
         if (!Prefs.historyEnabled(context)) return
         val list = load(context)
         // Повторный перевод того же текста поднимаем наверх, а не дублируем.
         list.removeAll { it.original == original }
-        list.add(0, Entry(System.currentTimeMillis(), original, translated, appName))
+        list.add(0, Entry(System.currentTimeMillis(), original, translated, appName, provider))
         while (list.size > MAX_ENTRIES) list.removeAt(list.size - 1)
         save(context, list)
     }
@@ -57,7 +58,7 @@ object HistoryStore {
                 val array = JSONArray(f.readText())
                 for (i in 0 until array.length()) {
                     val o = array.getJSONObject(i)
-                    list.add(Entry(o.getLong("t"), o.getString("o"), o.getString("r"), o.optString("a")))
+                    list.add(Entry(o.getLong("t"), o.getString("o"), o.getString("r"), o.optString("a"), o.optString("p")))
                 }
             }
         }.onFailure { AppLog.e("Не удалось прочитать историю", it) }
@@ -68,7 +69,10 @@ object HistoryStore {
     private fun save(context: Context, list: List<Entry>) {
         val array = JSONArray()
         for (e in list) {
-            array.put(JSONObject().put("t", e.time).put("o", e.original).put("r", e.translated).put("a", e.appName))
+            array.put(
+                JSONObject().put("t", e.time).put("o", e.original).put("r", e.translated)
+                    .put("a", e.appName).put("p", e.provider)
+            )
         }
         runCatching { file(context).writeText(array.toString()) }
             .onFailure { AppLog.e("Не удалось сохранить историю", it) }
