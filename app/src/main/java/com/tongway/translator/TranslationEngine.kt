@@ -205,32 +205,43 @@ class TranslationEngine(private val context: Context) {
      */
     private suspend fun <T> withModel(block: suspend (String) -> T): T {
         val manual = Prefs.model(context)
-        val model = manual.ifEmpty { autoModel(refresh = false) }
-        Prefs.addUsage(context)
-        return try {
-            block(model)
-        } catch (e: OpenRouterClient.CloudException) {
-            if (!e.modelMissing || manual.isNotEmpty()) throw e
-            AppLog.i("Модель $model недоступна, выбираю другую")
-            val other = autoModel(refresh = true, exclude = model)
+        if (manual.isNotEmpty()) {
             Prefs.addUsage(context)
-            block(other)
+            return block(manual)
+        }
+        // Автовыбор: если модель пропала или перегружена, пробуем ещё до двух других.
+        val tried = mutableSetOf<String>()
+        var model = autoModel(refresh = false, exclude = tried)
+        while (true) {
+            Prefs.addUsage(context)
+            try {
+                return block(model)
+            } catch (e: OpenRouterClient.CloudException) {
+                tried.add(model)
+                if (!e.tryOtherModel || tried.size >= MAX_MODEL_TRIES) throw e
+                AppLog.i("Модель $model: ${e.reason}, пробую другую")
+                model = autoModel(refresh = true, exclude = tried)
+            }
         }
     }
 
     /** Бесплатная модель для перевода; список обновляется раз в сутки. */
-    private suspend fun autoModel(refresh: Boolean, exclude: String? = null): String {
+    private suspend fun autoModel(refresh: Boolean, exclude: Set<String>): String {
         val (cached, time) = Prefs.autoModel(context)
         if (!refresh && cached.isNotEmpty() && System.currentTimeMillis() - time < DAY_MS) return cached
-        val models = runCatching { OpenRouterClient.freeModels() }
+        val models = (freeModelsCache ?: runCatching { OpenRouterClient.freeModels() }
             .getOrElse { throw OpenRouterClient.CloudException("не удалось получить список моделей") }
-            .filter { it.id != exclude }
+            .also { freeModelsCache = it })
+            .filter { it.id !in exclude }
         val pick = OpenRouterClient.pickDefault(models)
             ?: throw OpenRouterClient.CloudException("нет доступных бесплатных моделей")
         AppLog.i("Автовыбор модели OpenRouter: ${pick.id} (бесплатных моделей: ${models.size})")
         Prefs.setAutoModel(context, pick.id)
         return pick.id
     }
+
+    /** Список бесплатных моделей на время работы приложения (меняется редко). */
+    private var freeModelsCache: List<OpenRouterClient.Model>? = null
 
     private fun chunks(items: List<Pair<Int, String>>): List<List<Pair<Int, String>>> {
         val out = mutableListOf<MutableList<Pair<Int, String>>>()
@@ -277,6 +288,7 @@ class TranslationEngine(private val context: Context) {
         const val PROVIDER_CLOUD = "OpenRouter"
         const val PROVIDER_PHONE = "на телефоне"
         private const val CHUNK_CHARS = 6000
+        private const val MAX_MODEL_TRIES = 3
         private const val DAY_MS = 24L * 60 * 60 * 1000
 
         fun languageName(code: String): String =

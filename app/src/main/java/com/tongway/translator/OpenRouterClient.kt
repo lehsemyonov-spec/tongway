@@ -18,8 +18,11 @@ object OpenRouterClient {
 
     data class Model(val id: String, val name: String, val contextLength: Int)
 
-    /** Понятная ошибка для карточки; после неё переводим на телефоне. */
-    class CloudException(val reason: String, val modelMissing: Boolean = false) : Exception(reason)
+    /**
+     * Понятная ошибка для карточки; после неё переводим на телефоне.
+     * tryOtherModel — модель пропала или перегружена: имеет смысл попробовать другую бесплатную.
+     */
+    class CloudException(val reason: String, val tryOtherModel: Boolean = false) : Exception(reason)
 
     private const val BASE = "https://openrouter.ai/api/v1"
     const val KEYS_PAGE = "https://openrouter.ai/keys"
@@ -143,11 +146,26 @@ object OpenRouterClient {
             401 -> CloudException("неверный ключ")
             402 -> CloudException("для этой модели нужен баланс на счёте")
             403 -> CloudException("доступ запрещён: ${message ?: "проверьте ключ"}")
-            404 -> CloudException("модель недоступна", modelMissing = true)
-            429 -> CloudException("лимит запросов: подождите минуту или до завтра")
-            400 -> CloudException(message ?: "неверный запрос", modelMissing = message?.contains("model", true) == true)
-            in 500..599 -> CloudException("сервис или модель сейчас перегружены")
+            404 -> CloudException("модель недоступна", tryOtherModel = true)
+            429 -> rateLimit(message.orEmpty())
+            400 -> CloudException(message ?: "неверный запрос", tryOtherModel = message?.contains("model", true) == true)
+            in 500..599 -> CloudException("модель сейчас перегружена", tryOtherModel = true)
             else -> CloudException("ошибка $code${message?.let { ": $it" } ?: ""}")
+        }
+    }
+
+    /**
+     * 429 бывает трёх видов: исчерпан личный дневной лимит, слишком частые запросы
+     * или бесплатная модель перегружена у поставщика (это не лимит пользователя).
+     */
+    private fun rateLimit(message: String): CloudException {
+        val m = message.lowercase()
+        return when {
+            "per-day" in m || "per day" in m || "daily" in m ->
+                CloudException("дневной лимит бесплатных запросов исчерпан, сбросится завтра")
+            "per-min" in m || "per minute" in m ->
+                CloudException("слишком много запросов подряд, подождите минуту")
+            else -> CloudException("модель перегружена, слишком много желающих", tryOtherModel = true)
         }
     }
 
