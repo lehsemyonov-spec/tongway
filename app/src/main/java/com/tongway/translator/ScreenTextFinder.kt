@@ -12,7 +12,11 @@ import kotlin.math.min
 /** Ищет текст в точке экрана через дерево элементов, которое видят спец. возможности. */
 object ScreenTextFinder {
 
-    data class Found(val text: String, val bounds: Rect, val packageName: String)
+    /**
+     * weak = текст взят из описания картинки или самой картинки (например «Фото»):
+     * тогда сначала стоит поискать настоящий текст на снимке экрана.
+     */
+    data class Found(val text: String, val bounds: Rect, val packageName: String, val weak: Boolean = false)
 
     private const val MAX_NODES = 5000
     /** Текст длиннее этого пробуем сузить до абзаца под прицелом. */
@@ -36,6 +40,15 @@ object ScreenTextFinder {
         }
         return null
     }
+
+    /** Пакет приложения, которое сейчас на экране (для истории). */
+    fun topPackage(service: AccessibilityService): String =
+        service.windows
+            .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            .maxByOrNull { it.layer }
+            ?.root?.packageName?.toString()
+            ?: service.rootInActiveWindow?.packageName?.toString()
+            ?: "?"
 
     /** Один кусок текста на экране для перевода всего экрана. */
     data class Block(val text: String, val bounds: Rect)
@@ -125,12 +138,13 @@ object ScreenTextFinder {
         val node = best ?: return null
         val text = bestText ?: return null
         val packageName = root.packageName?.toString() ?: "?"
+        val weak = node.text.isNullOrBlank() || node.className?.contains("Image") == true
         if (text.length > NARROW_FROM) {
             narrowToParagraph(node, text, x, y)?.let { (paragraph, rect) ->
                 return Found(paragraph, rect, packageName)
             }
         }
-        return Found(text.take(MAX_TEXT), Rect(bestBounds), packageName)
+        return Found(text.take(MAX_TEXT), Rect(bestBounds), packageName, weak)
     }
 
     private fun nodeText(node: AccessibilityNodeInfo): String? {

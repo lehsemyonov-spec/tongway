@@ -65,7 +65,10 @@
     <string name="popup_close">Закрыть</string>
     <string name="popup_copied">Перевод скопирован</string>
     <string name="translating">Перевожу…</string>
-    <string name="no_text_found">Здесь не нашлось текста. Попробуйте навести прицел точнее.\n\nТекст на картинках и в некоторых приложениях (игры, видео) пока не распознаётся.</string>
+    <string name="no_text_found">Здесь не нашлось текста. Попробуйте навести прицел точнее — прямо на строчку.</string>
+    <string name="ocr_working">Распознаю текст на картинке…</string>
+    <string name="ocr_nothing">на снимке экрана не нашлось латинских букв</string>
+    <string name="ocr_problem">Распознавание с картинки: %1$s.</string>
     <string name="already_russian">Этот текст уже на русском.</string>
     <string name="bubble_tap_hint">Потяните кружок на текст и отпустите — переведётся кусок под прицелом.\n\nДолгое нажатие на кружок — перевод всего экрана. Убрать кружок — перетащить на крестик внизу.</string>
     <string name="bubble_closed">Кружок убран. Вернуть — в приложении Tongway.</string>
@@ -80,7 +83,7 @@
     <string name="screen_progress">Перевожу экран… %1$d из %2$d</string>
     <string name="screen_done">Готово, переведено кусков текста: %1$d. Коснитесь экрана, чтобы закрыть.</string>
     <string name="screen_error">Не удалось перевести экран: %1$s</string>
-    <string name="screen_no_text">На экране не нашлось английского текста.\n\nТекст на картинках и в некоторых приложениях (игры, видео) пока не распознаётся.</string>
+    <string name="screen_no_text">На экране не нашлось английского текста.</string>
     <string name="screen_need_model">Сначала скачайте словарь: откройте Tongway и нажмите «Скачать словарь».</string>
 
     <!-- Кнопка в шторке -->

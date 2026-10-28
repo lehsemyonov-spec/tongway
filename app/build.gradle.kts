@@ -65,4 +65,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.google.mlkit:language-id:17.0.6")
+    // Распознавание напечатанного латинского текста на снимке экрана (модель внутри приложения).
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 }

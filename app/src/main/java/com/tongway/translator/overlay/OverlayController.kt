@@ -31,6 +31,7 @@ import com.tongway.translator.App
 import com.tongway.translator.BubbleTileService
 import com.tongway.translator.HistoryActivity
 import com.tongway.translator.HistoryStore
+import com.tongway.translator.ImageTextFinder
 import com.tongway.translator.SettingsActivity
 import com.tongway.translator.ModelDownloadWatcher
 import com.tongway.translator.ui.MechanicalDnaView
@@ -45,6 +46,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.hypot
@@ -361,7 +363,7 @@ class OverlayController(private val service: AccessibilityService) {
         translateJob?.cancel()
         dismissPopup()
         translateJob = scope.launch {
-            val found = try {
+            var found = try {
                 withContext(Dispatchers.Default) { ScreenTextFinder.find(service, x, y) }
             } catch (e: CancellationException) {
                 throw e
@@ -369,9 +371,23 @@ class OverlayController(private val service: AccessibilityService) {
                 AppLog.e("Ошибка при поиске текста", e)
                 null
             }
+            // Обычного текста нет (или это подпись к картинке) — ищем текст на самой картинке.
+            var imageProblem: String? = null
+            if (found == null || found.weak) {
+                val (blocks, problem) = recognizeScreen(Rect(x - 1, y - 1, x + 1, y + 1))
+                val block = ImageTextFinder.blockAt(blocks, x, y, dp(24))
+                if (block != null) {
+                    AppLog.i("Текст найден на картинке: ${block.text.length} симв.")
+                    found = ScreenTextFinder.Found(block.text, block.bounds, ScreenTextFinder.topPackage(service))
+                } else {
+                    imageProblem = problem
+                }
+            }
             if (found == null) {
                 AppLog.i("Текст не найден в точке ($x, $y)")
-                showPopup(Rect(x - 1, y - 1, x + 1, y + 1)).showMessage(context.getString(R.string.no_text_found))
+                val message = context.getString(R.string.no_text_found) +
+                    (imageProblem?.let { "\n\n" + context.getString(R.string.ocr_problem, it) } ?: "")
+                showPopup(Rect(x - 1, y - 1, x + 1, y + 1)).showMessage(message)
                 return@launch
             }
             AppLog.i("Найден текст в ${found.packageName}: ${found.text.length} симв.")
@@ -425,10 +441,20 @@ class OverlayController(private val service: AccessibilityService) {
                 AppLog.e("Ошибка при сборе текста с экрана", e)
                 emptyList<ScreenTextFinder.Block>() to "?"
             }
-            val english = blocks.filterNot { App.engine.looksCyrillic(it.text) }
+            // Добавляем текст с картинок, если его нет среди обычного текста.
+            val (imageBlocks, imageProblem) = recognizeScreen(bubbleAnchor())
+            val fromImages = imageBlocks
+                .filter { image -> blocks.none { overlapShare(image.bounds, it.bounds) > 0.5f } }
+                .map { ScreenTextFinder.Block(it.text, it.bounds) }
+            if (fromImages.isNotEmpty()) AppLog.i("Перевод экрана: с картинок ${fromImages.size} кусков")
+            val english = (blocks + fromImages)
+                .filterNot { App.engine.looksCyrillic(it.text) }
+                .sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
             if (english.isEmpty()) {
                 AppLog.i("Перевод экрана: текста не нашлось")
-                showPopup(bubbleAnchor()).showMessage(context.getString(R.string.screen_no_text))
+                val message = context.getString(R.string.screen_no_text) +
+                    (imageProblem?.let { "\n\n" + context.getString(R.string.ocr_problem, it) } ?: "")
+                showPopup(bubbleAnchor()).showMessage(message)
                 return@launch
             }
             AppLog.i("Перевод экрана в $packageName: ${english.size} кусков текста")
@@ -460,6 +486,53 @@ class OverlayController(private val service: AccessibilityService) {
                 bubble?.busy = false
             }
         }
+    }
+
+    /**
+     * Снимок экрана и распознавание текста на нём. Кружок на время снимка становится
+     * прозрачным, чтобы не закрыть текст; пока идёт распознавание, видна карточка-индикатор.
+     * Возвращает найденные куски и, если не получилось, понятную причину.
+     */
+    private suspend fun recognizeScreen(anchor: Rect): Pair<List<ImageTextFinder.Block>, String?> {
+        val view = bubble
+        view?.alpha = 0f
+        val capture = try {
+            delay(SCREENSHOT_DELAY_MS)
+            ImageTextFinder.capture(service)
+        } finally {
+            view?.alpha = idleAlpha
+        }
+        if (capture is ImageTextFinder.Capture.Failed) {
+            AppLog.i("Распознавание: ${capture.reason}")
+            return emptyList<ImageTextFinder.Block>() to capture.reason
+        }
+        val bitmap = (capture as ImageTextFinder.Capture.Ok).bitmap
+        val card = showPopup(anchor)
+        card.showStatus(context.getString(R.string.ocr_working))
+        bubble?.busy = true
+        return try {
+            val started = SystemClock.uptimeMillis()
+            val blocks = withContext(Dispatchers.Default) { ImageTextFinder.recognize(bitmap) }
+            AppLog.i("Распознавание: ${blocks.size} кусков за ${SystemClock.uptimeMillis() - started} мс")
+            blocks to if (blocks.isEmpty()) context.getString(R.string.ocr_nothing) else null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.e("Ошибка распознавания текста", e)
+            emptyList<ImageTextFinder.Block>() to (e.message ?: e.javaClass.simpleName)
+        } finally {
+            bitmap.recycle()
+            bubble?.busy = false
+            if (popup === card) closePopupWindows()
+        }
+    }
+
+    /** Какая доля прямоугольника a перекрыта прямоугольником b. */
+    private fun overlapShare(a: Rect, b: Rect): Float {
+        val i = Rect()
+        if (!i.setIntersect(a, b)) return 0f
+        val area = a.width().toFloat() * a.height()
+        return if (area <= 0f) 0f else i.width() * i.height() / area
     }
 
     /** Панель внизу: ход перевода, «Копировать» и «✕». Касание в любом другом месте закрывает перевод. */
@@ -788,6 +861,8 @@ class OverlayController(private val service: AccessibilityService) {
 
     companion object {
         private const val AIM_DP = 60
+        /** Пауза, чтобы прозрачный кружок и убранный прицел не попали на снимок. */
+        private const val SCREENSHOT_DELAY_MS = 90L
         private const val AIM_OFFSET_DP = 72
         private const val CLOSE_DP = 72
     }
