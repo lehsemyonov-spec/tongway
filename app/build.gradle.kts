@@ -17,6 +17,11 @@ android {
         targetSdk = 34
         versionCode = buildNumber
         versionName = "0.1.$buildNumber"
+
+        // Только процессоры телефонов: части для компьютеров (x86) удваивали размер файла.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     signingConfigs {

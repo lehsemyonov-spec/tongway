@@ -54,6 +54,9 @@
   проверяем только через GitHub Actions (`.github/workflows/build.yml`).
 - Каждая сборка выкладывает `tongway.apk` в пре-релиз `latest`:
   https://github.com/lehsemyonov-spec/tongway/releases/download/latest/tongway.apk
+  Запасная ссылка (ветка `apk`, без срока действия ссылки — с телефона качается надёжнее):
+  https://raw.githubusercontent.com/lehsemyonov-spec/tongway/apk/tongway.apk
+- В APK только `arm64-v8a` и `armeabi-v7a` (без x86), чтобы файл был вдвое меньше.
 - `versionCode` = номер сборки GitHub Actions, чтобы новая версия ставилась поверх старой.
 - `app/debug.keystore` лежит в репозитории специально: один ключ для всех сборок,
   иначе телефон не даст обновить приложение.
