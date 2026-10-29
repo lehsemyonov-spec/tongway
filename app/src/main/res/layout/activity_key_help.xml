@@ -42,18 +42,18 @@
                     android:textSize="34sp" />
 
                 <TextView
+                    android:id="@+id/helpProvider"
                     style="@style/Tongway.Title"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="OpenRouter"
                     android:textColor="@color/accent"
                     android:textSize="24sp" />
 
                 <TextView
+                    android:id="@+id/helpSubtitle"
                     style="@style/Tongway.Hint"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/help_subtitle" />
+                    android:layout_height="wrap_content" />
             </LinearLayout>
 
             <ImageView
@@ -65,13 +65,13 @@
         </LinearLayout>
 
         <TextView
+            android:id="@+id/helpSteps"
             style="@style/Tongway.Card"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="18dp"
             android:fontFamily="@font/inter"
             android:lineSpacingMultiplier="1.15"
-            android:text="@string/help_steps"
             android:textColor="@color/text_secondary"
             android:textSize="14sp" />
 
@@ -80,6 +80,6 @@
             style="@style/Tongway.Pill"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/help_open" />
+            android:text="" />
     </LinearLayout>
 </ScrollView>

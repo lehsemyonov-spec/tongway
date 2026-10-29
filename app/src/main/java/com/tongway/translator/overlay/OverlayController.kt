@@ -76,6 +76,10 @@ class OverlayController(private val service: AccessibilityService) {
     private var snapAnimator: ValueAnimator? = null
 
     private var crosshair: CrosshairView? = null
+    /** Захват цели: прицел надо задержать на месте LOCK_MS, тогда после отпускания будет перевод. */
+    private var lockAnimator: ValueAnimator? = null
+    private val lockAnchor = Point()
+    private var targetLocked = false
     private val crosshairParams = overlayParams(aimSize, aimSize, touchable = false)
 
     private var closeZone: CloseZoneView? = null
@@ -288,6 +292,42 @@ class OverlayController(private val service: AccessibilityService) {
         positionCrosshair()
         if (addWindow(close, closeParams)) closeZone = close
         if (addWindow(aim, crosshairParams)) crosshair = aim
+        restartLock()
+    }
+
+    /** Прицел сдвинулся — захват начинается заново с текущей точки. */
+    private fun restartLock() {
+        lockAnimator?.cancel()
+        targetLocked = false
+        crosshair?.locked = false
+        crosshair?.progress = 0f
+        lockAnchor.set(crosshairParams.x, crosshairParams.y)
+        if (isOverCloseZone()) return
+        lockAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = LOCK_MS
+            addUpdateListener { crosshair?.progress = it.animatedValue as Float }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    cancelled = true
+                }
+
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (cancelled) return
+                    targetLocked = true
+                    crosshair?.let {
+                        it.locked = true
+                        it.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    private fun stopLock() {
+        lockAnimator?.cancel()
+        lockAnimator = null
     }
 
     private fun updateDragViews() {
@@ -296,6 +336,12 @@ class OverlayController(private val service: AccessibilityService) {
             windowManager.updateViewLayout(it, crosshairParams)
         }
         closeZone?.active = isOverCloseZone()
+        // Небольшое дрожание пальца захват не сбрасывает.
+        val moved = hypot(
+            (crosshairParams.x - lockAnchor.x).toFloat(),
+            (crosshairParams.y - lockAnchor.y).toFloat(),
+        )
+        if (moved > dp(LOCK_SLOP_DP)) restartLock()
     }
 
     /** Прицел стоит над кружком, чтобы палец не закрывал текст. */
@@ -318,6 +364,9 @@ class OverlayController(private val service: AccessibilityService) {
     private fun endDrag(cancelled: Boolean) {
         val overClose = isOverCloseZone()
         val aim = aimPointOnScreen()
+        val locked = targetLocked
+        stopLock()
+        targetLocked = false
         updateWindowOffset()
         removeDragViews()
         when {
@@ -327,10 +376,12 @@ class OverlayController(private val service: AccessibilityService) {
                 Prefs.setBubbleEnabled(service, false)
                 Toast.makeText(service, R.string.bubble_closed, Toast.LENGTH_LONG).show()
             }
-            else -> {
+            // Цель захвачена — переводим. Иначе кружок просто переехал.
+            locked -> {
                 snapToEdge()
                 translateAt(aim.x, aim.y)
             }
+            else -> snapToEdge()
         }
     }
 
@@ -353,6 +404,7 @@ class OverlayController(private val service: AccessibilityService) {
     }
 
     private fun removeDragViews() {
+        stopLock()
         crosshair?.let { removeWindow(it) }
         crosshair = null
         closeZone?.let { removeWindow(it) }
@@ -374,18 +426,23 @@ class OverlayController(private val service: AccessibilityService) {
                 null
             }
             // Обычного текста нет (или это подпись к картинке) — ищем текст на самой картинке.
+            // Сканируем только полосу вокруг прицела во всю ширину: так быстро и точно
+            // ловятся субтитры, а лишние надписи с экрана не попадают.
             var imageProblem: String? = null
-            var page: List<ImageTextFinder.Block> = emptyList()
+            var fromImage = false
             if (found == null || found.weak) {
-                val (blocks, problem) = recognizeScreen()
-                val block = ImageTextFinder.blockAt(blocks, x, y, dp(24))
+                val screen = screenSize()
+                val half = dp(BAND_HALF_DP)
+                val band = Rect(0, (y - half).coerceAtLeast(0), screen.x, (y + half).coerceAtMost(screen.y))
+                val (blocks, problem) = recognizeScreen(band)
+                removeScan()
+                val block = ImageTextFinder.blockAt(blocks, x, y, dp(28))
                 if (block != null) {
-                    AppLog.i("Текст найден на картинке: ${block.text.length} симв., всего абзацев ${blocks.size}")
+                    AppLog.i("Текст найден на картинке: ${block.text.length} симв.")
                     found = ScreenTextFinder.Found(block.text, block.bounds, ScreenTextFinder.topPackage(service))
-                    page = blocks
+                    fromImage = true
                 } else {
                     imageProblem = problem
-                    removeScan()
                 }
             }
             if (found == null) {
@@ -410,8 +467,8 @@ class OverlayController(private val service: AccessibilityService) {
                 if (!result.alreadyTarget) {
                     HistoryStore.add(service, result.original, result.translated, appLabel(found.packageName), result.provider)
                 }
-                // На картинке больше одного абзаца — предлагаем весь текст или перевод поверх фото.
-                if (page.size > 1) card.offerPage(page, found.packageName)
+                // Текст с картинки — бонусом можно отсканировать весь экран.
+                if (fromImage) card.offerPage(found.bounds, found.packageName)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -449,7 +506,7 @@ class OverlayController(private val service: AccessibilityService) {
                 emptyList<ScreenTextFinder.Block>() to "?"
             }
             // Добавляем текст с картинок, если его нет среди обычного текста.
-            val (imageBlocks, imageProblem) = recognizeScreen()
+            val (imageBlocks, imageProblem) = recognizeScreen(null)
             removeScan()
             val fromImages = imageBlocks
                 .filter { image -> blocks.none { overlapShare(image.bounds, it.bounds) > 0.5f } }
@@ -505,53 +562,64 @@ class OverlayController(private val service: AccessibilityService) {
         }
     }
 
-    /** «Весь текст»: переводим все абзацы со снимка по порядку прямо в карточке. */
-    private fun translatePage(card: Popup, page: List<ImageTextFinder.Block>, packageName: String) {
-        translateJob?.cancel()
-        removeHighlight()
-        translateJob = scope.launch {
-            val english = page.filterNot { App.engine.looksCyrillic(it.text) }
-            scanView?.highlightAll(context.getString(R.string.page_label, english.size))
-            card.prepareForPage()
-            bubble?.busy = true
-            try {
-                card.showStatus(context.getString(R.string.page_progress, 0, english.size))
-                val translated = arrayOfNulls<String>(english.size)
-                val outcome = App.engine.translateMany(
-                    english.map { it.text },
-                    onStatus = { card.showStatus(it) },
-                    onEach = { index, text -> translated[index] = text },
-                )
-                val original = english.joinToString("\n\n") { it.text }
-                val result = TranslationEngine.Result(
-                    original,
-                    translated.joinToString("\n\n") { it.orEmpty() },
-                    "en",
-                    alreadyTarget = false,
-                    provider = outcome.provider,
-                    note = outcome.note,
-                )
-                card.showResult(result)
-                HistoryStore.add(service, result.original, result.translated, appLabel(packageName), result.provider)
-                AppLog.i("Весь текст с картинки переведён: ${english.size} абз.")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                AppLog.e("Ошибка перевода всего текста", e)
-                card.showMessage(context.getString(R.string.translate_error, e.message ?: e.javaClass.simpleName))
-            } finally {
-                bubble?.busy = false
-            }
-        }
-    }
-
-    /** «Поверх фото»: тот же снимок, перевод плашками прямо на картинке. */
-    private fun platesForPage(page: List<ImageTextFinder.Block>) {
+    /**
+     * Бонус «Весь текст» / «Поверх фото»: заново сканируем весь экран (с большой полосой)
+     * и показываем перевод всего текста в карточке или плашками на картинке.
+     */
+    private fun scanWholeScreen(anchor: Rect, packageName: String, plates: Boolean) {
         translateJob?.cancel()
         closePopupWindows()
         removeScan()
         translateJob = scope.launch {
-            showPlates(page.filterNot { App.engine.looksCyrillic(it.text) }.map { it.text to it.bounds })
+            val (blocks, problem) = recognizeScreen(null)
+            val english = blocks.filterNot { App.engine.looksCyrillic(it.text) }
+            if (english.isEmpty()) {
+                removeScan()
+                val message = context.getString(R.string.screen_no_text) +
+                    (problem?.let { "\n\n" + context.getString(R.string.ocr_problem, it) } ?: "")
+                showPopup(anchor).showMessage(message)
+                return@launch
+            }
+            if (plates) {
+                removeScan()
+                showPlates(english.map { it.text to it.bounds })
+            } else {
+                translatePage(showPopup(anchor), english, packageName)
+            }
+        }
+    }
+
+    /** «Весь текст»: все абзацы по порядку прямо в карточке, одной записью в историю. */
+    private suspend fun translatePage(card: Popup, english: List<ImageTextFinder.Block>, packageName: String) {
+        scanView?.highlightAll(context.getString(R.string.page_label, english.size))
+        card.prepareForPage()
+        bubble?.busy = true
+        try {
+            card.showStatus(context.getString(R.string.page_progress, 0, english.size))
+            val translated = arrayOfNulls<String>(english.size)
+            val outcome = App.engine.translateMany(
+                english.map { it.text },
+                onStatus = { card.showStatus(it) },
+                onEach = { index, text -> translated[index] = text },
+            )
+            val result = TranslationEngine.Result(
+                english.joinToString("\n\n") { it.text },
+                translated.joinToString("\n\n") { it.orEmpty() },
+                "en",
+                alreadyTarget = false,
+                provider = outcome.provider,
+                note = outcome.note,
+            )
+            card.showResult(result)
+            HistoryStore.add(service, result.original, result.translated, appLabel(packageName), result.provider)
+            AppLog.i("Весь текст с экрана переведён: ${english.size} абз.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.e("Ошибка перевода всего текста", e)
+            card.showMessage(context.getString(R.string.translate_error, e.message ?: e.javaClass.simpleName))
+        } finally {
+            bubble?.busy = false
         }
     }
 
@@ -561,7 +629,7 @@ class OverlayController(private val service: AccessibilityService) {
      * полоса сканирования; потом найденные абзацы обводятся рамками (окно scanView
      * остаётся, его убирает вызывающий). Возвращает абзацы и, если не вышло, причину.
      */
-    private suspend fun recognizeScreen(): Pair<List<ImageTextFinder.Block>, String?> {
+    private suspend fun recognizeScreen(area: Rect?): Pair<List<ImageTextFinder.Block>, String?> {
         val view = bubble
         view?.alpha = 0f
         val capture = try {
@@ -575,14 +643,15 @@ class OverlayController(private val service: AccessibilityService) {
             return emptyList<ImageTextFinder.Block>() to capture.reason
         }
         val bitmap = (capture as ImageTextFinder.Capture.Ok).bitmap
-        val scan = showScan()
+        val scan = showScan(area)
         bubble?.busy = true
         return try {
             val started = SystemClock.uptimeMillis()
-            // Полоса должна успеть хотя бы раз проехать экран — так видно, что сканируется всё.
-            val blocks = withContext(Dispatchers.Default) { ImageTextFinder.recognize(bitmap) }
+            // Полоса должна успеть хотя бы раз проехать — так видно, что именно сканируется.
+            val blocks = withContext(Dispatchers.Default) { ImageTextFinder.recognize(bitmap, area) }
             val elapsed = SystemClock.uptimeMillis() - started
-            if (elapsed < MIN_SCAN_MS) delay(MIN_SCAN_MS - elapsed)
+            val minimum = if (area != null) MIN_AREA_SCAN_MS else MIN_SCAN_MS
+            if (elapsed < minimum) delay(minimum - elapsed)
             AppLog.i("Распознавание: ${blocks.size} абзацев за $elapsed мс")
             scan?.showBlocks(blocks.map { it.bounds }, context.getString(R.string.scan_found, blocks.size))
             blocks to if (blocks.isEmpty()) context.getString(R.string.ocr_nothing) else null
@@ -597,10 +666,10 @@ class OverlayController(private val service: AccessibilityService) {
         }
     }
 
-    private fun showScan(): ScanOverlayView? {
+    private fun showScan(area: Rect?): ScanOverlayView? {
         removeScan()
         val screen = screenSize()
-        val view = ScanOverlayView(context)
+        val view = ScanOverlayView(context, area)
         view.showScanning(context.getString(R.string.scan_working))
         val params = overlayParams(screen.x, screen.y, touchable = false).apply {
             x = -windowOffset.x
@@ -806,10 +875,10 @@ class OverlayController(private val service: AccessibilityService) {
         }
 
         /** Кнопки «Весь текст» и «Поверх фото» для текста с картинки. */
-        fun offerPage(page: List<ImageTextFinder.Block>, packageName: String) {
+        fun offerPage(anchor: Rect, packageName: String) {
             pageRow.visibility = View.VISIBLE
-            root.findViewById<View>(R.id.popupBtnPage).setOnClickListener { translatePage(this, page, packageName) }
-            root.findViewById<View>(R.id.popupBtnPlates).setOnClickListener { platesForPage(page) }
+            root.findViewById<View>(R.id.popupBtnPage).setOnClickListener { scanWholeScreen(anchor, packageName, plates = false) }
+            root.findViewById<View>(R.id.popupBtnPlates).setOnClickListener { scanWholeScreen(anchor, packageName, plates = true) }
             reposition()
         }
 
@@ -976,6 +1045,13 @@ class OverlayController(private val service: AccessibilityService) {
         private const val SCREENSHOT_DELAY_MS = 90L
         /** Не меньше одного прохода полосы сканирования. */
         private const val MIN_SCAN_MS = 1100L
+        private const val MIN_AREA_SCAN_MS = 500L
+        /** Полоса вокруг прицела: по 80dp вверх и вниз — хватает на 2–3 строки субтитров. */
+        private const val BAND_HALF_DP = 80
+        /** Сколько держать прицел на месте, чтобы захватить цель. */
+        private const val LOCK_MS = 500L
+        /** Насколько можно сдвинуть палец, не сбрасывая захват. */
+        private const val LOCK_SLOP_DP = 14
         private const val AIM_OFFSET_DP = 72
         private const val CLOSE_DP = 72
     }

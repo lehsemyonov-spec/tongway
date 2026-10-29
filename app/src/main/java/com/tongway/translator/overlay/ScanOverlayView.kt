@@ -14,11 +14,14 @@ import androidx.core.content.res.ResourcesCompat
 import com.tongway.translator.R
 
 /**
- * Сканирование картинки на весь экран. Пока идёт распознавание, сверху вниз
- * проезжает оранжевая полоса со светящейся сеткой. Потом каждый найденный абзац
- * обводится тонкой рамкой, а вверху подпись «Найдено абзацев: N».
+ * Сканирование картинки. Пока идёт распознавание, сверху вниз проезжает оранжевая
+ * полоса со светящейся сеткой. Потом каждый найденный абзац обводится тонкой рамкой.
+ *
+ * area = null — весь экран (бонус «весь экран»), вверху подпись «Найдено абзацев: N».
+ * area задана — только узкая полоса вокруг прицела (субтитры): рамка-сканер в уголках,
+ * полоса едет быстрее, подписи нет.
  */
-class ScanOverlayView(context: Context) : View(context) {
+class ScanOverlayView(context: Context, private val area: Rect? = null) : View(context) {
 
     private val density = resources.displayMetrics.density
     private val accent = ContextCompat.getColor(context, R.color.accent)
@@ -80,7 +83,16 @@ class ScanOverlayView(context: Context) : View(context) {
         val w = width.toFloat()
         val h = height.toFloat()
         if (scanning) {
-            drawSweep(canvas, w, h)
+            if (area != null) {
+                canvas.save()
+                canvas.translate((area.left - location[0]).toFloat(), (area.top - location[1]).toFloat())
+                canvas.clipRect(0f, 0f, area.width().toFloat(), area.height().toFloat())
+                drawSweep(canvas, area.width().toFloat(), area.height().toFloat())
+                canvas.restore()
+                drawAreaCorners(canvas)
+            } else {
+                drawSweep(canvas, w, h)
+            }
         } else {
             val corner = 5f * density
             frame.alpha = if (allBright) 230 else 140
@@ -94,15 +106,38 @@ class ScanOverlayView(context: Context) : View(context) {
                 canvas.drawRoundRect(rect, corner, corner, frame)
             }
         }
-        drawLabel(canvas, w)
+        if (area == null) drawLabel(canvas, w)
         if (scanning && isShown) postInvalidateOnAnimation()
+    }
+
+    /** Уголки рамки-сканера вокруг полосы. */
+    private fun drawAreaCorners(canvas: Canvas) {
+        val a = area ?: return
+        val l = (a.left - location[0]).toFloat() + 4 * density
+        val t = (a.top - location[1]).toFloat()
+        val r = (a.right - location[0]).toFloat() - 4 * density
+        val b = (a.bottom - location[1]).toFloat()
+        val arm = 18f * density
+        frame.alpha = 255
+        frame.strokeWidth = 2.5f * density
+        canvas.drawLine(l, t, l + arm, t, frame)
+        canvas.drawLine(l, t, l, t + arm, frame)
+        canvas.drawLine(r, t, r - arm, t, frame)
+        canvas.drawLine(r, t, r, t + arm, frame)
+        canvas.drawLine(l, b, l + arm, b, frame)
+        canvas.drawLine(l, b, l, b - arm, frame)
+        canvas.drawLine(r, b, r - arm, b, frame)
+        canvas.drawLine(r, b, r, b - arm, frame)
+        frame.strokeWidth = 1.5f * density
     }
 
     private fun drawSweep(canvas: Canvas, w: Float, h: Float) {
         canvas.drawRect(0f, 0f, w, h, wash)
-        val t = ((SystemClock.uptimeMillis() - startTime) % SWEEP_MS) / SWEEP_MS.toFloat()
-        val y = t * (h + BAND_DP * density)
-        val top = y - BAND_DP * density
+        val sweep = if (area != null) SWEEP_AREA_MS else SWEEP_MS
+        val bandHeight = if (area != null) h * 0.6f else BAND_DP * density
+        val t = ((SystemClock.uptimeMillis() - startTime) % sweep) / sweep.toFloat()
+        val y = t * (h + bandHeight)
+        val top = y - bandHeight
         band.shader = LinearGradient(0f, top, 0f, y, 0x00EA5F0A, 0x66EA5F0A, Shader.TileMode.CLAMP)
         canvas.drawRect(0f, top, w, y, band)
         // Сетка светится только внутри полосы, как у сканера.
@@ -140,6 +175,7 @@ class ScanOverlayView(context: Context) : View(context) {
 
     private companion object {
         const val SWEEP_MS = 1100L
+        const val SWEEP_AREA_MS = 500L
         const val BAND_DP = 120f
     }
 }

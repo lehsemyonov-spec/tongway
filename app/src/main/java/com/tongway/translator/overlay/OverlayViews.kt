@@ -85,9 +85,40 @@ class BubbleView(context: Context) : View(context) {
     }
 }
 
-/** Прицел в стиле экрана робота: круг, перекрестие и уголки. */
+/**
+ * Прицел в стиле экрана робота: круг, перекрестие и уголки.
+ * Пока прицел держат на месте, вокруг заполняется дуга (progress); когда она замкнулась —
+ * цель захвачена (locked): прицел становится ярким, и после отпускания будет перевод.
+ */
 class CrosshairView(context: Context) : View(context) {
     private val accent = color(R.color.accent)
+    private val accentLight = color(R.color.accent_light)
+
+    var progress = 0f
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    var locked = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) {
+                scaleX = 0.8f
+                scaleY = 0.8f
+                animate().scaleX(1f).scaleY(1f).setDuration(140).start()
+            }
+            invalidate()
+        }
+
+    private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(3f)
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val arcRect = RectF()
     private val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = 0x88000000.toInt()
@@ -110,6 +141,14 @@ class CrosshairView(context: Context) : View(context) {
         val radius = min(cx, cy) * 0.5f
         val edge = dp(4f)
         val arm = dp(9f)
+        line.color = if (locked) accentLight else accent
+        line.alpha = if (locked) 255 else 190
+        line.strokeWidth = if (locked) dp(3f) else dp(2.5f)
+        if (locked) {
+            glow.color = accent
+            glow.alpha = 70
+            canvas.drawCircle(cx, cy, radius * 1.35f, glow)
+        }
         for (paint in listOf(shadow, line)) {
             canvas.drawCircle(cx, cy, radius, paint)
             canvas.drawLine(cx, edge + dp(4f), cx, cy - radius * 0.5f, paint)
@@ -126,7 +165,14 @@ class CrosshairView(context: Context) : View(context) {
             canvas.drawLine(w - edge, h - edge, w - edge - arm, h - edge, paint)
             canvas.drawLine(w - edge, h - edge, w - edge, h - edge - arm, paint)
         }
-        canvas.drawCircle(cx, cy, dp(2.5f), dot)
+        // Дуга захвата цели.
+        if (progress > 0f && !locked) {
+            arc.color = accentLight
+            arcRect.set(cx - radius - dp(4f), cy - radius - dp(4f), cx + radius + dp(4f), cy + radius + dp(4f))
+            canvas.drawArc(arcRect, -90f, 360f * progress, false, arc)
+        }
+        dot.color = if (locked) accent else 0xFFFFFFFF.toInt()
+        canvas.drawCircle(cx, cy, if (locked) dp(3.5f) else dp(2.5f), dot)
     }
 }
 

@@ -111,7 +111,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp" />
 
-            <!-- Настройки OpenRouter: видны, только когда он выбран. -->
+            <!-- Нейросети: видны, только когда выбран этот режим. -->
             <LinearLayout
                 android:id="@+id/cloudBox"
                 android:layout_width="match_parent"
@@ -120,118 +120,23 @@
 
                 <TextView
                     style="@style/Tongway.Hint"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="@string/key_label" />
-
-                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+                    android:text="@string/chain_hint" />
 
-                    <EditText
-                        android:id="@+id/keyInput"
-                        android:layout_width="0dp"
-                        android:layout_height="46dp"
-                        android:layout_weight="1"
-                        android:background="@drawable/bg_input"
-                        android:fontFamily="monospace"
-                        android:hint="sk-or-…"
-                        android:importantForAutofill="no"
-                        android:inputType="textPassword"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:singleLine="true"
-                        android:textColor="@color/text"
-                        android:textSize="13sp" />
+                <include
+                    android:id="@+id/groqBox"
+                    layout="@layout/view_cloud_provider" />
 
-                    <TextView
-                        android:id="@+id/btnShowKey"
-                        style="@style/Tongway.PillSmall.Outline"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
-                        android:text="@string/key_show" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:id="@+id/btnPasteKey"
-                        style="@style/Tongway.PillSmall.Outline"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="@string/key_paste" />
-
-                    <TextView
-                        android:id="@+id/btnKeyHelp"
-                        style="@style/Tongway.PillSmall.Outline"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
-                        android:layout_weight="1"
-                        android:text="@string/key_help" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:id="@+id/modelText"
-                        style="@style/Tongway.Hint"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="0dp"
-                        android:layout_weight="1" />
-
-                    <TextView
-                        android:id="@+id/btnModel"
-                        style="@style/Tongway.PillSmall.Outline"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
-                        android:text="@string/model_choose" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/btnCheckKey"
-                    style="@style/Tongway.Pill"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="@string/key_check" />
-
-                <TextView
-                    android:id="@+id/checkResult"
-                    style="@style/Tongway.Body"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:textColor="@color/text"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/usageText"
-                    style="@style/Tongway.Hint"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp" />
+                <include
+                    android:id="@+id/openrouterBox"
+                    layout="@layout/view_cloud_provider" />
 
                 <TextView
                     style="@style/Tongway.Hint"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
                     android:text="@string/cloud_privacy" />
             </LinearLayout>
         </LinearLayout>

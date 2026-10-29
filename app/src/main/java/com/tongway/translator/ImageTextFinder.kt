@@ -70,11 +70,26 @@ object ImageTextFinder {
             )
         }
 
-    /** Распознаёт текст и собирает его в абзацы по порядку чтения. */
-    suspend fun recognize(bitmap: Bitmap): List<Block> {
-        val text = recognizer.process(InputImage.fromBitmap(bitmap, 0)).await()
+    /**
+     * Распознаёт текст и собирает его в абзацы по порядку чтения.
+     * area — только эта часть снимка (полоса вокруг прицела), координаты экрана; null — весь экран.
+     */
+    suspend fun recognize(bitmap: Bitmap, area: Rect? = null): List<Block> {
+        val region = area?.let { Rect(it).apply { intersect(0, 0, bitmap.width, bitmap.height) } }
+        val source = if (region != null && !region.isEmpty) {
+            Bitmap.createBitmap(bitmap, region.left, region.top, region.width(), region.height())
+        } else {
+            bitmap
+        }
+        val dx = if (source !== bitmap) region!!.left else 0
+        val dy = if (source !== bitmap) region!!.top else 0
+        val text = try {
+            recognizer.process(InputImage.fromBitmap(source, 0)).await()
+        } finally {
+            if (source !== bitmap) source.recycle()
+        }
         val raw = text.textBlocks.mapNotNull { block ->
-            val bounds = block.boundingBox ?: return@mapNotNull null
+            val bounds = block.boundingBox?.apply { offset(dx, dy) } ?: return@mapNotNull null
             val joined = joinLines(block.lines)
             val heights = block.lines.mapNotNull { it.boundingBox?.height() }
             val lineHeight = if (heights.isEmpty()) bounds.height() else heights.sum() / heights.size

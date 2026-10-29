@@ -11,19 +11,20 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Ключ OpenRouter хранится только на телефоне, зашифрованным ключом из системного
+ * Ключи сервисов (Groq, OpenRouter) хранятся только на телефоне, зашифрованным ключом из системного
  * хранилища Android (Keystore): прочитать его может только Tongway на этом телефоне.
  */
 object SecretStore {
     private const val ALIAS = "tongway_api_key"
-    private const val PREF_KEY = "openrouter_key_enc"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
 
-    fun saveApiKey(context: Context, key: String) {
+    private fun prefKey(provider: CloudProvider) = "${provider.id}_key_enc"
+
+    fun saveApiKey(context: Context, provider: CloudProvider, key: String) {
         val trimmed = key.trim()
         val prefs = Prefs.prefs(context).edit()
         if (trimmed.isEmpty()) {
-            prefs.remove(PREF_KEY).apply()
+            prefs.remove(prefKey(provider)).apply()
             return
         }
         runCatching {
@@ -31,12 +32,12 @@ object SecretStore {
             cipher.init(Cipher.ENCRYPT_MODE, secretKey())
             val encrypted = cipher.doFinal(trimmed.toByteArray(Charsets.UTF_8))
             val packed = cipher.iv + encrypted
-            prefs.putString(PREF_KEY, Base64.encodeToString(packed, Base64.NO_WRAP)).apply()
+            prefs.putString(prefKey(provider), Base64.encodeToString(packed, Base64.NO_WRAP)).apply()
         }.onFailure { AppLog.e("Не удалось сохранить ключ", it) }
     }
 
-    fun apiKey(context: Context): String? {
-        val stored = Prefs.prefs(context).getString(PREF_KEY, null) ?: return null
+    fun apiKey(context: Context, provider: CloudProvider): String? {
+        val stored = Prefs.prefs(context).getString(prefKey(provider), null) ?: return null
         return runCatching {
             val packed = Base64.decode(stored, Base64.NO_WRAP)
             val iv = packed.copyOfRange(0, IV_SIZE)

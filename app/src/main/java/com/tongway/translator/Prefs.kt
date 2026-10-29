@@ -19,13 +19,9 @@ object Prefs {
     const val DEFAULT_BUBBLE_ALPHA = 0.92f
 
     const val PROVIDER_PHONE = "phone"
-    const val PROVIDER_OPENROUTER = "openrouter"
+    /** Режим «нейросеть» (значение осталось от времени, когда был только OpenRouter). */
+    const val PROVIDER_CLOUD = "openrouter"
     private const val KEY_PROVIDER = "provider"
-    private const val KEY_MODEL = "openrouter_model"
-    private const val KEY_AUTO_MODEL = "openrouter_auto_model"
-    private const val KEY_AUTO_MODEL_TIME = "openrouter_auto_model_time"
-    private const val KEY_USAGE_DAY = "usage_day"
-    private const val KEY_USAGE_COUNT = "usage_count"
 
     fun prefs(context: Context): SharedPreferences = context.getSharedPreferences(NAME, Context.MODE_PRIVATE)
 
@@ -61,28 +57,33 @@ object Prefs {
 
     fun setProvider(context: Context, provider: String) = prefs(context).edit().putString(KEY_PROVIDER, provider).apply()
 
-    /** Модель, выбранная вручную; пустая строка — выбирать автоматически. */
-    fun model(context: Context) = prefs(context).getString(KEY_MODEL, "") ?: ""
+    /** Модель сервиса, выбранная вручную; пустая строка — выбирать автоматически. */
+    fun model(context: Context, provider: CloudProvider) = prefs(context).getString("${provider.id}_model", "") ?: ""
 
-    fun setModel(context: Context, model: String) = prefs(context).edit().putString(KEY_MODEL, model).apply()
+    fun setModel(context: Context, provider: CloudProvider, model: String) =
+        prefs(context).edit().putString("${provider.id}_model", model).apply()
 
-    fun autoModel(context: Context): Pair<String, Long> =
-        (prefs(context).getString(KEY_AUTO_MODEL, "") ?: "") to prefs(context).getLong(KEY_AUTO_MODEL_TIME, 0L)
+    fun autoModel(context: Context, provider: CloudProvider): Pair<String, Long> =
+        (prefs(context).getString("${provider.id}_auto_model", "") ?: "") to
+            prefs(context).getLong("${provider.id}_auto_model_time", 0L)
 
-    fun setAutoModel(context: Context, model: String) = prefs(context).edit()
-        .putString(KEY_AUTO_MODEL, model)
-        .putLong(KEY_AUTO_MODEL_TIME, if (model.isEmpty()) 0L else System.currentTimeMillis())
+    fun setAutoModel(context: Context, provider: CloudProvider, model: String) = prefs(context).edit()
+        .putString("${provider.id}_auto_model", model)
+        .putLong("${provider.id}_auto_model_time", if (model.isEmpty()) 0L else System.currentTimeMillis())
         .apply()
 
-    /** Сколько запросов к OpenRouter сделано сегодня (бесплатно около 50 в день). */
-    fun usageToday(context: Context): Int {
+    /** Сколько запросов к сервису сделано сегодня. */
+    fun usageToday(context: Context, provider: CloudProvider): Int {
         val p = prefs(context)
-        return if (p.getString(KEY_USAGE_DAY, "") == today()) p.getInt(KEY_USAGE_COUNT, 0) else 0
+        return if (p.getString("${provider.id}_usage_day", "") == today()) p.getInt("${provider.id}_usage_count", 0) else 0
     }
 
-    fun addUsage(context: Context) {
-        val count = usageToday(context) + 1
-        prefs(context).edit().putString(KEY_USAGE_DAY, today()).putInt(KEY_USAGE_COUNT, count).apply()
+    fun addUsage(context: Context, provider: CloudProvider) {
+        val count = usageToday(context, provider) + 1
+        prefs(context).edit()
+            .putString("${provider.id}_usage_day", today())
+            .putInt("${provider.id}_usage_count", count)
+            .apply()
     }
 
     private fun today() = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
