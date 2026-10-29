@@ -261,11 +261,13 @@ class TranslationEngine(private val context: Context) {
                 }
             }
             if (translated == null) {
-                usedBy.add(PROVIDER_PHONE)
-                translated = group.mapIndexed { i, paragraph ->
-                    onStatus("Перевожу на телефоне… абзац ${i + 1} из ${group.size}")
-                    translateEnglish(paragraph)
-                }.joinToString("\n\n")
+                // Документом не вышло — переводим по абзацам (пронумерованными кусками нейросети,
+                // а что не получится — на телефоне).
+                val pieces = arrayOfNulls<String>(group.size)
+                val outcome = translateMany(group, onStatus, { i, t -> pieces[i] = t }, fromImage)
+                outcome.provider.split(" + ").forEach { usedBy.add(it) }
+                outcome.note?.let { problems.add(it) }
+                translated = pieces.joinToString("\n\n") { it.orEmpty() }
             }
             parts.add(translated)
         }

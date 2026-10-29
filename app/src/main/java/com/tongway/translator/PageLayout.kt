@@ -97,9 +97,39 @@ object PageLayout {
         }
         if (placed.isEmpty()) return Result(emptyList(), dropped, dominant.toFloat())
 
-        val columns = splitColumns(placed)
+        val columns = splitColumns(mergeSegments(placed))
         val paragraphs = orderColumns(columns).flatMap { paragraphsOf(it) }
         return Result(paragraphs, dropped, dominant.toFloat())
+    }
+
+    /**
+     * На изогнутой странице распознавание режет одну строку на несколько кусков. Склеиваем куски,
+     * которые стоят на одной высоте почти вплотную друг к другу, обратно в одну строку.
+     */
+    private fun mergeSegments(items: List<Placed>): List<Placed> {
+        val heights = items.map { it.height }.sorted()
+        val h = heights[heights.size / 2].coerceAtLeast(1f)
+        val rows = mutableListOf<MutableList<Placed>>()
+        for (p in items.sortedBy { it.left }) {
+            val row = rows.firstOrNull { r ->
+                val last = r.last()
+                val overlap = min(last.bottom, p.bottom) - max(last.top, p.top)
+                val gap = p.left - last.right
+                overlap > 0.5f * min(last.height, p.height) && gap < 1.5f * h && gap > -0.3f * h
+            }
+            if (row != null) row.add(p) else rows.add(mutableListOf(p))
+        }
+        return rows.map { r ->
+            if (r.size == 1) return@map r[0]
+            val first = r.first().line
+            val last = r.last().line
+            val merged = Line(
+                r.joinToString(" ") { it.line.text.trim() },
+                listOf(first.corners[0], last.corners[1], last.corners[2], first.corners[3]),
+                r.minOf { it.line.confidence },
+            )
+            Placed(merged, r.minOf { it.left }, r.minOf { it.top }, r.maxOf { it.right }, r.maxOf { it.bottom })
+        }
     }
 
     /**
@@ -184,10 +214,11 @@ object PageLayout {
                 val gap = row.top - prev.bottom > 0.75f * h
                 val indented = row.left - leftMargin > 0.8f * h
                 val prevIndented = prev.left - leftMargin > 0.8f * h
-                // Красная строка: отступ у этой строки, а у предыдущей его нет.
-                val indent = longColumn && indented && !prevIndented
-                // Предыдущая строка кончилась точкой и оборвалась заметно раньше края.
                 val ended = prev.text.trimEnd().lastOrNull()?.let { it in ".!?:;\"”»)" } == true
+                // Красная строка: отступ у этой строки, а у предыдущей его нет — или предыдущая
+                // без точки в конце (заголовок над абзацем).
+                val indent = longColumn && indented && (!prevIndented || !ended)
+                // Предыдущая строка кончилась точкой и оборвалась заметно раньше края.
                 val short = longColumn && ended && rightMargin - prev.right > 2.5f * h
                 if (gap || indent || short) flush()
             }

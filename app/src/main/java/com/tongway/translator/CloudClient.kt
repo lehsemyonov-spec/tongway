@@ -116,11 +116,29 @@ object CloudClient {
     }
 
     suspend fun translateOne(provider: CloudProvider, key: String, model: String, text: String, ocr: Boolean = false): String =
-        withContext(Dispatchers.IO) { clean(chat(provider, key, model, SYSTEM_ONE + if (ocr) OCR_NOTE else "", text)) }
+        withContext(Dispatchers.IO) {
+            checkComplete(text, clean(chat(provider, key, model, SYSTEM_ONE + if (ocr) OCR_NOTE else "", text)))
+        }
 
     /** Связный документ (абзацы через пустую строку) одним запросом. */
     suspend fun translateDocument(provider: CloudProvider, key: String, model: String, text: String, ocr: Boolean): String =
-        withContext(Dispatchers.IO) { clean(chat(provider, key, model, SYSTEM_DOCUMENT + if (ocr) OCR_NOTE else "", text)) }
+        withContext(Dispatchers.IO) {
+            val reply = checkComplete(text, clean(chat(provider, key, model, SYSTEM_DOCUMENT + if (ocr) OCR_NOTE else "", text)))
+            AppLog.i("${provider.title} ($model): весь текст ${text.length} → ${reply.length} символов")
+            reply
+        }
+
+    /**
+     * Перевод на русский обычно не короче оригинала. Если ответ намного короче — нейросеть
+     * перевела только кусок (у пользователя так было: вместо страницы — «В ТЕКСТЕ 2. Сателлитные»).
+     */
+    private fun checkComplete(original: String, translated: String): String {
+        if (original.length > 120 && translated.length < original.length * 0.45) {
+            AppLog.i("Перевод подозрительно короткий: ${original.length} → ${translated.length} символов")
+            throw CloudException("нейросеть перевела не весь текст", tryOtherModel = true)
+        }
+        return translated
+    }
 
     /**
      * Несколько кусков одним запросом — так тратится один запрос из дневного лимита, а не десятки.
@@ -162,6 +180,8 @@ object CloudClient {
         val payload = JSONObject()
             .put("model", model)
             .put("temperature", 0.2)
+            // С запасом: русский текст занимает в 2–3 раза больше «токенов», чем английский.
+            .put("max_tokens", (user.length * 2).coerceIn(1024, 8000))
             .put(
                 "messages",
                 JSONArray()
@@ -171,9 +191,13 @@ object CloudClient {
         val body = request(provider, "POST", "${provider.base}/chat/completions", key, payload.toString())
         val json = JSONObject(body)
         json.optJSONObject("error")?.let { throw CloudException(it.optString("message", "ошибка сервиса")) }
-        val content = json.optJSONArray("choices")?.optJSONObject(0)
-            ?.optJSONObject("message")?.optString("content")
+        val choice = json.optJSONArray("choices")?.optJSONObject(0)
+        val content = choice?.optJSONObject("message")?.optString("content")
         if (content.isNullOrBlank()) throw CloudException("пустой ответ нейросети", tryOtherModel = true)
+        if (choice?.optString("finish_reason") == "length") {
+            AppLog.i("${provider.title} ($model): ответ обрезан по длине")
+            throw CloudException("ответ нейросети обрезан", tryOtherModel = true)
+        }
         return content
     }
 
