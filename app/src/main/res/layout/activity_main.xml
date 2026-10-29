@@ -310,12 +310,16 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- Робот показывает, сколько шагов осталось. -->
+        <!-- Робот показывает, сколько шагов осталось; касание — какие именно. -->
         <LinearLayout
+            android:id="@+id/statusCard"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
             android:background="@drawable/bg_card"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="?attr/selectableItemBackground"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="6dp"

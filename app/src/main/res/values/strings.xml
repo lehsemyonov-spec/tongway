@@ -43,7 +43,16 @@
     <string name="status_ready_text">Откройте любое приложение и перетащите кружок на текст.</string>
     <string name="status_left_one">Остался 1 шаг</string>
     <string name="status_left_many">Осталось шагов: %1$d</string>
-    <string name="status_left_text">Когда всё будет готово, робот покажет «класс».</string>
+    <string name="status_left_text">Нажмите, чтобы увидеть, что осталось настроить. Когда всё будет готово, робот покажет «класс».</string>
+    <string name="status_dialog_title">Настройка</string>
+    <string name="status_step_model_ok">✓ 01 Словарь — скачан</string>
+    <string name="status_step_model_no">✕ 01 Словарь — не скачан. Нужен интернет, около 30 МБ.</string>
+    <string name="status_step_service_ok">✓ 02 Спец. возможности — включены</string>
+    <string name="status_step_service_no">✕ 02 Спец. возможности — выключены. Включите «Tongway» в настройках телефона.</string>
+    <string name="status_step_bubble_ok">✓ 03 Кружок — показан</string>
+    <string name="status_step_bubble_no">✕ 03 Кружок — скрыт.</string>
+    <string name="status_all_ready">Всё настроено, можно переводить!</string>
+    <string name="status_close">Закрыть</string>
 
     <string name="test_title">Проверка</string>
     <string name="test_hint">Переведите текст здесь или потренируйтесь: наведите кружок на английский текст в поле.</string>

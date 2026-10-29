@@ -69,6 +69,7 @@ class MainActivity : AppCompatActivity() {
         btnBubble.setOnClickListener { toggleBubble() }
         findViewById<View>(R.id.btnHowTo).setOnClickListener { showHowTo() }
         findViewById<View>(R.id.btnTestTranslate).setOnClickListener { testTranslate() }
+        findViewById<View>(R.id.statusCard).setOnClickListener { showSteps() }
         findViewById<View>(R.id.btnMenu).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -177,6 +178,31 @@ class MainActivity : AppCompatActivity() {
             statusTitle.text = if (left == 1) getString(R.string.status_left_one) else getString(R.string.status_left_many, left)
             statusText.setText(R.string.status_left_text)
         }
+    }
+
+    /** Какие шаги готовы, а какие нет; кнопка сразу делает первый недостающий шаг. */
+    private fun showSteps() {
+        val service = TranslatorService.instance
+        val serviceOn = service != null
+        val bubbleOn = service?.isBubbleShown == true
+        val lines = listOf(
+            getString(if (modelReady) R.string.status_step_model_ok else R.string.status_step_model_no),
+            getString(if (serviceOn) R.string.status_step_service_ok else R.string.status_step_service_no),
+            getString(if (bubbleOn) R.string.status_step_bubble_ok else R.string.status_step_bubble_no),
+        )
+        val builder = AlertDialog.Builder(this)
+            .setTitle(R.string.status_dialog_title)
+            .setMessage(lines.joinToString("\n\n"))
+            .setNegativeButton(R.string.status_close, null)
+        when {
+            !modelReady -> builder.setPositiveButton(R.string.model_download) { _, _ -> if (!downloading) downloadModel() }
+            !serviceOn -> builder.setPositiveButton(R.string.open_accessibility) { _, _ ->
+                openSettings(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            !bubbleOn -> builder.setPositiveButton(R.string.bubble_show) { _, _ -> toggleBubble() }
+            else -> builder.setMessage(lines.joinToString("\n\n") + "\n\n" + getString(R.string.status_all_ready))
+        }
+        builder.show()
     }
 
     private fun setChip(chip: TextView, ok: Boolean, text: Int) {
