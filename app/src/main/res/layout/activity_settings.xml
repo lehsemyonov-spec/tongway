@@ -267,7 +267,76 @@
                 android:text="@string/settings_reset_position" />
         </LinearLayout>
 
-        <!-- 02. История -->
+        <!-- 03. Пальцевый перевод -->
+        <LinearLayout
+            style="@style/Tongway.Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    style="@style/Tongway.CardTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/finger_title" />
+
+                <TextView
+                    style="@style/Tongway.StepNumber"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="03" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/Tongway.Hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/finger_hint" />
+
+            <com.tongway.translator.overlay.FingerStrokePreview
+                android:id="@+id/fingerPreview"
+                android:layout_width="match_parent"
+                android:layout_height="110dp"
+                android:layout_marginTop="10dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    style="@style/Tongway.Hint"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="0dp"
+                    android:layout_weight="1"
+                    android:text="@string/finger_thickness" />
+
+                <TextView
+                    android:id="@+id/fingerValue"
+                    style="@style/Tongway.Title"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/accent"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <com.google.android.material.slider.Slider
+                android:id="@+id/fingerSlider"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:stepSize="5"
+                android:valueFrom="10"
+                android:valueTo="100" />
+        </LinearLayout>
+
+        <!-- 04. История -->
         <LinearLayout
             style="@style/Tongway.Card"
             android:layout_width="match_parent"
@@ -290,7 +359,7 @@
                     style="@style/Tongway.StepNumber"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="03" />
+                    android:text="04" />
             </LinearLayout>
 
             <com.google.android.material.materialswitch.MaterialSwitch
@@ -311,7 +380,7 @@
                 android:text="@string/settings_history_open" />
         </LinearLayout>
 
-        <!-- 03. Шторка -->
+        <!-- 05. Шторка -->
         <LinearLayout
             style="@style/Tongway.Card"
             android:layout_width="match_parent"
@@ -334,7 +403,7 @@
                     style="@style/Tongway.StepNumber"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="04" />
+                    android:text="05" />
             </LinearLayout>
 
             <TextView
@@ -356,6 +425,46 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="@string/tile_add" />
+        </LinearLayout>
+
+        <!-- 06. Версии -->
+        <LinearLayout
+            style="@style/Tongway.Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    style="@style/Tongway.CardTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/versions_title" />
+
+                <TextView
+                    style="@style/Tongway.StepNumber"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="06" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/versionsText"
+                style="@style/Tongway.Hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content" />
+
+            <TextView
+                android:id="@+id/btnVersions"
+                style="@style/Tongway.Pill.Outline"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/versions_open" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

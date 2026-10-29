@@ -32,8 +32,19 @@ class BubbleView(context: Context) : View(context) {
             invalidate()
         }
 
+    /** Режим «пальцевого перевода»: значок пальца и ободок ярче. */
+    var fingerMode = false
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+
     private val accent = color(R.color.accent)
     private val icon = ContextCompat.getDrawable(context, R.drawable.ic_translate)!!.mutate().apply { setTint(accent) }
+    private val fingerIcon = ContextCompat.getDrawable(context, R.drawable.ic_finger)!!.mutate().apply {
+        setTint(color(R.color.accent_light))
+    }
     private val core = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF0B0B0B.toInt() }
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -60,11 +71,12 @@ class BubbleView(context: Context) : View(context) {
         val radius = outer - dp(10f)
         canvas.drawCircle(cx, cy, outer, glow)
         canvas.drawCircle(cx, cy, radius, core)
+        ring.strokeWidth = if (fingerMode) dp(3.5f) else dp(2f)
         canvas.drawCircle(cx, cy, radius, ring)
 
         // Зубчатое кольцо, как у шестерёнки.
         val spin = if (busy) (SystemClock.uptimeMillis() % 2400L) / 2400f * 360f else 0f
-        ticks.alpha = if (busy) 255 else 130
+        ticks.alpha = if (busy || fingerMode) 255 else 130
         val inner = radius + dp(3f)
         val tip = radius + dp(7f)
         for (i in 0 until TEETH) {
@@ -75,8 +87,9 @@ class BubbleView(context: Context) : View(context) {
         }
 
         val iconSize = (radius * 1.05f).toInt()
-        icon.setBounds((cx - iconSize / 2).toInt(), (cy - iconSize / 2).toInt(), (cx + iconSize / 2).toInt(), (cy + iconSize / 2).toInt())
-        icon.draw(canvas)
+        val shown = if (fingerMode) fingerIcon else icon
+        shown.setBounds((cx - iconSize / 2).toInt(), (cy - iconSize / 2).toInt(), (cx + iconSize / 2).toInt(), (cy + iconSize / 2).toInt())
+        shown.draw(canvas)
         if (busy) postInvalidateOnAnimation()
     }
 

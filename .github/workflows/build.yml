@@ -58,3 +58,20 @@ jobs:
           git config user.email "github-actions@users.noreply.github.com"
           git add . && git commit -q -m "Сборка №${{ github.run_number }}"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" apk
+
+      # Архив версий: каждая сборка — отдельный выпуск «Tongway 0.1.N» на странице
+      # https://github.com/<репозиторий>/releases (адрес не меняется). Хранятся последние 20.
+      - name: Сохранить в архив версий
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="0.1.${{ github.run_number }}"
+          cp tongway.apk "tongway-$VERSION.apk"
+          TITLE=$(git log -1 --pretty=%s)
+          gh release create "v$VERSION" "tongway-$VERSION.apk" \
+            --target "${{ github.sha }}" \
+            --title "Tongway $VERSION" \
+            --notes "$TITLE"
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("v0."))] | sort_by(.createdAt) | reverse | .[20:] | .[].tagName' \
+            | while read -r old; do gh release delete "$old" --yes --cleanup-tag || true; done

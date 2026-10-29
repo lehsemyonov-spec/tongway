@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Плашка вверху экрана, пока включён «пальцевый перевод». -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_finger_bar"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="14dp"
+    android:paddingTop="6dp"
+    android:paddingEnd="6dp"
+    android:paddingBottom="6dp">
+
+    <ImageView
+        android:layout_width="18dp"
+        android:layout_height="18dp"
+        android:importantForAccessibility="no"
+        android:src="@drawable/ic_finger"
+        android:tint="@color/accent_light" />
+
+    <TextView
+        android:id="@+id/fingerBarText"
+        style="@style/Tongway.Title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:text="@string/finger_bar"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/fingerBarClose"
+        style="@style/Tongway.PillSmall.Outline"
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:layout_marginStart="10dp"
+        android:contentDescription="@string/finger_exit"
+        android:paddingStart="0dp"
+        android:paddingEnd="0dp"
+        android:text="✕" />
+</LinearLayout>

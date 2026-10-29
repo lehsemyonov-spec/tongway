@@ -22,6 +22,7 @@ import androidx.lifecycle.lifecycleScope
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.slider.Slider
 import com.tongway.translator.overlay.BubbleView
+import com.tongway.translator.overlay.FingerStrokePreview
 import com.tongway.translator.ui.TechBackgroundDrawable
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -41,6 +42,8 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<View>(R.id.btnBack).setOnClickListener { finish() }
 
         setupTranslator()
+        setupFinger()
+        setupVersions()
 
         preview = BubbleView(this)
         findViewById<FrameLayout>(R.id.previewBox).addView(preview)
@@ -90,6 +93,38 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         showTranslatorState()
+    }
+
+    // ---------- Пальцевый перевод ----------
+
+    private fun setupFinger() {
+        val preview = findViewById<FingerStrokePreview>(R.id.fingerPreview)
+        val value = findViewById<TextView>(R.id.fingerValue)
+        fun show(thickness: Int) {
+            value.text = thickness.toString()
+            preview.strokeWidthPx = Prefs.fingerWidthDp(thickness) * resources.displayMetrics.density
+        }
+        val current = Prefs.fingerThickness(this)
+        findViewById<Slider>(R.id.fingerSlider).apply {
+            this.value = (current - current % 5).coerceIn(10, 100).toFloat()
+            addOnChangeListener { _, v, fromUser ->
+                if (fromUser) {
+                    Prefs.setFingerThickness(this@SettingsActivity, v.toInt())
+                    show(v.toInt())
+                }
+            }
+        }
+        show(current)
+    }
+
+    // ---------- Версии ----------
+
+    private fun setupVersions() {
+        findViewById<TextView>(R.id.versionsText).text = getString(R.string.versions_text, BuildConfig.VERSION_NAME)
+        findViewById<View>(R.id.btnVersions).setOnClickListener {
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(RELEASES_PAGE))) }
+                .onFailure { AppLog.e("Не удалось открыть страницу версий", it) }
+        }
     }
 
     // ---------- Переводчик ----------
@@ -293,5 +328,10 @@ class SettingsActivity : AppCompatActivity() {
                 Toast.makeText(this, R.string.tile_manual, Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    companion object {
+        /** Страница всех версий: адрес не меняется, новые версии добавляются туда. */
+        const val RELEASES_PAGE = "https://github.com/lehsemyonov-spec/tongway/releases"
     }
 }

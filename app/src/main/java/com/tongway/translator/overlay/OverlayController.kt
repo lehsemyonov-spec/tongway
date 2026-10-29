@@ -28,6 +28,8 @@ import android.view.animation.DecelerateInterpolator
 import android.widget.TextView
 import android.widget.Toast
 import com.tongway.translator.App
+import com.tongway.translator.FingerSelect
+import com.tongway.translator.PageLayout
 import com.tongway.translator.BubbleTileService
 import com.tongway.translator.HistoryActivity
 import com.tongway.translator.HistoryStore
@@ -42,6 +44,8 @@ import com.tongway.translator.R
 import com.tongway.translator.ScreenTextFinder
 import com.tongway.translator.TranslationEngine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -91,6 +95,14 @@ class OverlayController(private val service: AccessibilityService) {
     private var lastOutsideDismiss = 0L
 
     private var screenOverlay: ScreenTranslationView? = null
+
+    // «Пальцевый перевод»: слой на весь экран для пальца и плашка вверху.
+    private var fingerCanvas: FingerCanvasView? = null
+    private var fingerBar: View? = null
+    private var fingerCapture: Deferred<ImageTextFinder.Capture>? = null
+    private var lastFingerExit = 0L
+    /** Меню по касанию кружка ждёт, не будет ли второго касания (двойное — пальцевый режим). */
+    private var pendingMenu: Runnable? = null
     private var scanView: ScanOverlayView? = null
     private var screenBar: View? = null
 
@@ -148,6 +160,7 @@ class OverlayController(private val service: AccessibilityService) {
 
     fun hideBubble() {
         snapAnimator?.cancel()
+        exitFingerMode()
         removeDragViews()
         dismissPopup()
         closeScreenTranslation()
@@ -161,12 +174,15 @@ class OverlayController(private val service: AccessibilityService) {
         val view = bubble ?: return
         dismissPopup()
         closeScreenTranslation()
+        exitFingerMode()
         clampBubble(screenSize())
         windowManager.updateViewLayout(view, bubbleParams)
     }
 
     fun destroy() {
         translateJob?.cancel()
+        pendingMenu?.let { bubble?.removeCallbacks(it) }
+        exitFingerMode()
         hideBubble()
         closeScreenTranslation()
         removeScan()
@@ -269,14 +285,182 @@ class OverlayController(private val service: AccessibilityService) {
         }
     }
 
+    /**
+     * Касание кружка: меню. Двойное касание — включить «пальцевый перевод».
+     * В пальцевом режиме любое касание кружка его выключает.
+     */
     private fun onBubbleTap() {
+        val now = SystemClock.uptimeMillis()
+        if (isFingerMode) {
+            exitFingerMode()
+            return
+        }
+        // Второе касание двойного, которым режим только что выключили, — не открываем меню.
+        if (now - lastFingerExit < DOUBLE_TAP_MS * 2) return
+        pendingMenu?.let { waiting ->
+            bubble?.removeCallbacks(waiting)
+            pendingMenu = null
+            enterFingerMode()
+            return
+        }
         // Касание кружка уже закрыло карточку (как касание вне её) — второй раз не открываем.
-        if (SystemClock.uptimeMillis() - lastOutsideDismiss < 600) return
+        if (now - lastOutsideDismiss < 600) return
         if (popup != null) {
             dismissPopup()
             return
         }
-        showPopup(bubbleAnchor()).showMenu()
+        val waiting = Runnable {
+            pendingMenu = null
+            showPopup(bubbleAnchor()).showMenu()
+        }
+        pendingMenu = waiting
+        bubble?.postDelayed(waiting, DOUBLE_TAP_MS)
+    }
+
+    // ---------- Пальцевый перевод ----------
+
+    val isFingerMode: Boolean get() = fingerCanvas != null
+
+    private fun enterFingerMode() {
+        if (fingerCanvas != null || bubble == null) return
+        dismissPopup()
+        closeScreenTranslation()
+        updateWindowOffset()
+        val screen = screenSize()
+        val canvas = FingerCanvasView(context, fingerListener).apply {
+            strokeWidthPx = dp(Prefs.fingerWidthDp(Prefs.fingerThickness(service)).roundToInt()).toFloat()
+        }
+        val params = overlayParams(screen.x, screen.y, touchable = true).apply {
+            x = -windowOffset.x
+            y = -windowOffset.y
+        }
+        if (!addWindow(canvas, params)) return
+        fingerCanvas = canvas
+
+        val bar = LayoutInflater.from(context).inflate(R.layout.finger_bar, null)
+        bar.findViewById<View>(R.id.fingerBarClose).setOnClickListener { exitFingerMode() }
+        val barParams = overlayParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            touchable = true,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = dp(44)
+        }
+        if (addWindow(bar, barParams)) fingerBar = bar
+
+        // Кружок должен остаться поверх слоя для пальца — иначе его не коснуться.
+        // Переставляем его чуть позже: включить режим могли прямо из касания кружка.
+        bubble?.let { view ->
+            view.fingerMode = true
+            canvas.post {
+                if (bubble !== view || fingerCanvas !== canvas) return@post
+                removeWindow(view)
+                addWindow(view, bubbleParams)
+            }
+        }
+        AppLog.i("Пальцевый перевод включён, толщина ${Prefs.fingerThickness(service)}")
+    }
+
+    private fun exitFingerMode() {
+        val canvas = fingerCanvas ?: return
+        fingerCapture?.cancel()
+        fingerCapture = null
+        dismissPopup()
+        removeWindow(canvas)
+        fingerCanvas = null
+        fingerBar?.let { removeWindow(it) }
+        fingerBar = null
+        bubble?.fingerMode = false
+        lastFingerExit = SystemClock.uptimeMillis()
+        AppLog.i("Пальцевый перевод выключен")
+    }
+
+    private val fingerListener = object : FingerCanvasView.Listener {
+        /** Снимок экрана — сразу в момент касания, чтобы субтитры не успели смениться. */
+        override fun onStrokeStart() {
+            dismissPopup()
+            val canvas = fingerCanvas ?: return
+            canvas.hideStroke = true
+            fingerCapture?.cancel()
+            fingerCapture = scope.async {
+                val view = bubble
+                view?.alpha = 0f
+                fingerBar?.visibility = View.INVISIBLE
+                try {
+                    delay(FINGER_CAPTURE_DELAY_MS)
+                    ImageTextFinder.capture(service)
+                } finally {
+                    view?.alpha = idleAlpha
+                    fingerBar?.visibility = View.VISIBLE
+                    fingerCanvas?.hideStroke = false
+                }
+            }
+        }
+
+        override fun onStrokeEnd(points: List<PageLayout.Pt>) {
+            val capture = fingerCapture ?: return
+            translateJob?.cancel()
+            translateJob = scope.launch { translateStroke(capture, points) }
+        }
+    }
+
+    private suspend fun translateStroke(captureJob: Deferred<ImageTextFinder.Capture>, points: List<PageLayout.Pt>) {
+        val canvas = fingerCanvas ?: return
+        val width = canvas.strokeWidthPx
+        val radius = width / 2
+        val strokeBox = Rect(
+            points.minOf { it.x }.toInt(), points.minOf { it.y }.toInt(),
+            points.maxOf { it.x }.toInt(), points.maxOf { it.y }.toInt(),
+        )
+        val anchor = Rect(strokeBox).apply { inset(-radius.toInt(), -radius.toInt()) }
+        val capture = captureJob.await()
+        if (capture is ImageTextFinder.Capture.Failed) {
+            canvas.clear()
+            showPopup(anchor).showMessage(context.getString(R.string.ocr_problem, capture.reason))
+            return
+        }
+        val bitmap = (capture as ImageTextFinder.Capture.Ok).bitmap
+        val card = showPopup(anchor)
+        card.showStatus(context.getString(R.string.finger_reading))
+        bubble?.busy = true
+        try {
+            // Читаем только область вокруг линии — так быстрее; с запасом, чтобы слова у краёв не обрезались.
+            val area = Rect(strokeBox).apply { inset(-(radius + dp(60)).toInt(), -(radius + dp(30)).toInt()) }
+            val words = withContext(Dispatchers.Default) { ImageTextFinder.recognizeWords(bitmap, area) }
+            val selection = FingerSelect.select(words, points, radius)
+            AppLog.i("Пальцевый перевод: слов рядом ${words.size}, выделено ${selection.words.size}")
+            if (selection.text.isBlank()) {
+                canvas.clear()
+                card.showMessage(context.getString(R.string.finger_nothing))
+                return
+            }
+            canvas.showMarks(selection.words.map { w ->
+                Rect(
+                    w.corners.minOf { it.x }.toInt(), w.corners.minOf { it.y }.toInt(),
+                    w.corners.maxOf { it.x }.toInt(), w.corners.maxOf { it.y }.toInt(),
+                )
+            })
+            card.showStatus(context.getString(R.string.translating))
+            val result = App.engine.translate(
+                selection.text,
+                onStatus = { card.showStatus(it) },
+                onDownload = { card.showDownload(it) },
+                fromImage = true,
+            )
+            card.showResult(result)
+            if (!result.alreadyTarget) {
+                HistoryStore.add(service, result.original, result.translated, appLabel(ScreenTextFinder.topPackage(service)), result.provider)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            AppLog.e("Ошибка пальцевого перевода", e)
+            card.showMessage(context.getString(R.string.translate_error, e.message ?: e.javaClass.simpleName))
+        } finally {
+            bitmap.recycle()
+            bubble?.busy = false
+        }
     }
 
     // ---------- Перетаскивание: прицел и крестик ----------
@@ -910,6 +1094,7 @@ class OverlayController(private val service: AccessibilityService) {
             root.findViewById<View>(R.id.menuScreen).setOnClickListener { translateScreen() }
             root.findViewById<View>(R.id.menuHistory).setOnClickListener { openActivity(HistoryActivity::class.java) }
             root.findViewById<View>(R.id.menuSettings).setOnClickListener { openActivity(SettingsActivity::class.java) }
+            root.findViewById<View>(R.id.menuFinger).setOnClickListener { enterFingerMode() }
             setActionsVisible(false)
             attached = addWindow(root, params.also { it.y = placeY(measureHeight()) })
         }
@@ -1090,6 +1275,10 @@ class OverlayController(private val service: AccessibilityService) {
         private const val BAND_HALF_DP = 80
         /** Сколько держать прицел на месте, чтобы захватить цель. */
         private const val LOCK_MS = 500L
+        /** Сколько ждать второго касания, прежде чем открыть меню. */
+        private const val DOUBLE_TAP_MS = 280L
+        /** Пауза перед снимком в пальцевом режиме: кружок и плашка успевают стать прозрачными. */
+        private const val FINGER_CAPTURE_DELAY_MS = 50L
         /** Насколько можно сдвинуть палец, не сбрасывая захват. */
         private const val LOCK_SLOP_DP = 14
         private const val AIM_OFFSET_DP = 72

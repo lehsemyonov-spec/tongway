@@ -119,6 +119,59 @@ object ImageTextFinder {
         }
     }
 
+    /**
+     * Отдельные слова со снимка для «пальцевого перевода», в координатах экрана.
+     * area — часть снимка вокруг линии пальца (так быстрее). Мелкие буквы — увеличение вдвое.
+     */
+    suspend fun recognizeWords(bitmap: Bitmap, area: Rect): List<FingerSelect.Word> {
+        val region = Rect(area).apply { intersect(0, 0, bitmap.width, bitmap.height) }
+        if (region.isEmpty) return emptyList()
+        val crop = Bitmap.createBitmap(bitmap, region.left, region.top, region.width(), region.height())
+        try {
+            var words = wordsOf(crop, 1f, region)
+            val heights = words.map { w -> w.corners[3].y - w.corners[0].y }.sorted()
+            val median = if (heights.isEmpty()) 0f else heights[heights.size / 2]
+            if (heights.isNotEmpty() && median < SMALL_TEXT_PX &&
+                crop.width * 2 <= MAX_UPSCALED_SIDE && crop.height * 2 <= MAX_UPSCALED_SIDE
+            ) {
+                runCatching { Bitmap.createScaledBitmap(crop, crop.width * 2, crop.height * 2, true) }.getOrNull()?.let { big ->
+                    try {
+                        val better = wordsOf(big, 2f, region)
+                        if (better.sumOf { it.text.length } >= words.sumOf { it.text.length }) words = better
+                    } finally {
+                        big.recycle()
+                    }
+                }
+            }
+            return words
+        } finally {
+            crop.recycle()
+        }
+    }
+
+    private suspend fun wordsOf(image: Bitmap, scale: Float, region: Rect): List<FingerSelect.Word> {
+        val text = recognizer.process(InputImage.fromBitmap(image, 0)).await()
+        val out = mutableListOf<FingerSelect.Word>()
+        var lineIndex = 0
+        for (block in text.textBlocks) {
+            for (line in block.lines) {
+                for (element in line.elements) {
+                    val corners = element.cornerPoints ?: continue
+                    if (corners.size < 4) continue
+                    out.add(
+                        FingerSelect.Word(
+                            element.text,
+                            corners.map { PageLayout.Pt(it.x / scale + region.left, it.y / scale + region.top) },
+                            lineIndex,
+                        )
+                    )
+                }
+                lineIndex++
+            }
+        }
+        return out
+    }
+
     /** Строки ML Kit в координатах экрана (с учётом обрезки и увеличения). */
     private suspend fun recognizeLines(image: Bitmap, scale: Float, region: Rect): List<PageLayout.Line> {
         val text = recognizer.process(InputImage.fromBitmap(image, 0)).await()

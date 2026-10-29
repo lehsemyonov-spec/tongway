@@ -12,6 +12,8 @@ object Prefs {
     const val KEY_BUBBLE_ALPHA = "bubble_alpha"
     const val KEY_SNAP_TO_EDGE = "snap_to_edge"
     const val KEY_HISTORY_ENABLED = "history_enabled"
+    const val KEY_FINGER_THICKNESS = "finger_thickness"
+    const val DEFAULT_FINGER_THICKNESS = 40
 
     /** Размеры кружка на выбор, в dp: маленький, средний, большой. */
     val BUBBLE_SIZES = intArrayOf(56, 68, 82)
@@ -51,6 +53,15 @@ object Prefs {
     fun snapToEdge(context: Context) = prefs(context).getBoolean(KEY_SNAP_TO_EDGE, true)
 
     fun setSnapToEdge(context: Context, snap: Boolean) = prefs(context).edit().putBoolean(KEY_SNAP_TO_EDGE, snap).apply()
+
+    /** Толщина линии «пальцевого перевода»: 10 (тонкая) … 100 (около двух строк). */
+    fun fingerThickness(context: Context) = prefs(context).getInt(KEY_FINGER_THICKNESS, DEFAULT_FINGER_THICKNESS)
+
+    fun setFingerThickness(context: Context, value: Int) =
+        prefs(context).edit().putInt(KEY_FINGER_THICKNESS, value.coerceIn(10, 100)).apply()
+
+    /** Толщина в dp: 10 → 5dp, 40 → 20dp (одна строка с запасом), 100 → 50dp (около двух строк). */
+    fun fingerWidthDp(thickness: Int) = thickness * 0.5f
 
     /** Чем переводить: на телефоне или через OpenRouter. */
     fun provider(context: Context) = prefs(context).getString(KEY_PROVIDER, PROVIDER_PHONE) ?: PROVIDER_PHONE
