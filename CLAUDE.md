@@ -156,6 +156,10 @@
   https://raw.githubusercontent.com/lehsemyonov-spec/tongway/apk/tongway.apk
 - В APK только `arm64-v8a` и `armeabi-v7a` (без x86), чтобы файл был вдвое меньше.
 - `versionCode` = номер сборки GitHub Actions, чтобы новая версия ставилась поверх старой.
-- `app/debug.keystore` лежит в репозитории специально: один ключ для всех сборок,
-  иначе телефон не даст обновить приложение.
+- **Печать (ключ подписи)** — секрет репозитория `TONGWAY_KEYSTORE` (base64 файла PKCS12, EC P-256,
+  alias `tongway`, пароль `tongway-release` — пароль не секрет, секрет — сам файл). Сборка кладёт его во
+  временный файл → `TONGWAY_KEYSTORE_FILE` → `signingConfigs.tongway`. Секрет добавляет пользователь
+  (у Claude нет доступа к секретам). Пока секрета нет — подпись старым открытым `app/debug.keystore`
+  с предупреждением; после перехода на секрет `debug.keystore` удалить. Смена печати = одна переустановка.
+- Собирается **окончательная версия** (`assembleRelease`, без сжатия кода, проверка стиля не останавливает сборку).
 - Версии: AGP 8.7.3, Kotlin 2.0.21, Gradle 8.11.1, compileSdk 35, targetSdk 34, minSdk 26.

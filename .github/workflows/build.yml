@@ -26,11 +26,24 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # Печать (ключ подписи) берётся из секрета репозитория TONGWAY_KEYSTORE (base64 файла).
+      - name: Печать из секрета
+        env:
+          KEYSTORE_B64: ${{ secrets.TONGWAY_KEYSTORE }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > "$RUNNER_TEMP/tongway.keystore"
+            echo "TONGWAY_KEYSTORE_FILE=$RUNNER_TEMP/tongway.keystore" >> "$GITHUB_ENV"
+            echo "Подпись: секретная печать"
+          else
+            echo "::warning::Секрет TONGWAY_KEYSTORE не задан — подпись старой открытой печатью"
+          fi
+
       - name: Собрать APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./gradlew assembleRelease --stacktrace
 
       - name: Подготовить файл
-        run: cp app/build/outputs/apk/debug/app-debug.apk tongway.apk
+        run: cp app/build/outputs/apk/release/app-release.apk tongway.apk
 
       - uses: actions/upload-artifact@v4
         with:

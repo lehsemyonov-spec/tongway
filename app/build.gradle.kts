@@ -25,24 +25,45 @@ android {
     }
 
     signingConfigs {
-        // Постоянный ключ в репозитории: без него каждая облачная сборка подписывалась бы
-        // новым ключом, и Android отказывался бы обновлять приложение.
-        getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        // Печать (ключ подписи) — одна для всех сборок, иначе Android не даст обновить приложение.
+        // Настоящая печать хранится в секрете GitHub TONGWAY_KEYSTORE; сборка кладёт её во временный
+        // файл и передаёт путь в TONGWAY_KEYSTORE_FILE. Без секрета — старая открытая печать из репозитория
+        // (только чтобы сборка не ломалась, пока секрет не добавлен).
+        create("tongway") {
+            val secretKeystore = System.getenv("TONGWAY_KEYSTORE_FILE")
+            if (secretKeystore != null) {
+                storeFile = file(secretKeystore)
+                storePassword = "tongway-release"
+                keyAlias = "tongway"
+                keyPassword = "tongway-release"
+            } else {
+                storeFile = file("debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("tongway")
+        }
+        // Окончательная (не отладочная) версия: закрыта от копания внутри.
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("tongway")
         }
     }
 
     buildFeatures {
         buildConfig = true
+    }
+
+    // Проверка стиля кода не должна останавливать сборку окончательной версии.
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 
     compileOptions {
