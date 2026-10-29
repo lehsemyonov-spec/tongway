@@ -7,7 +7,6 @@ import android.os.Build
 import android.view.Display
 import androidx.annotation.RequiresApi
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.delay
@@ -71,79 +70,84 @@ object ImageTextFinder {
         }
 
     /**
-     * Распознаёт текст и собирает его в абзацы по порядку чтения.
+     * Распознаёт текст и собирает его в абзацы по порядку чтения (`PageLayout`: выравнивание наклона,
+     * отсев мусора, колонки, абзацы по отступам).
      * area — только эта часть снимка (полоса вокруг прицела), координаты экрана; null — весь экран.
+     * exclude — зоны, где текст не с картинки: системные панели, надписи и кнопки приложений.
      */
-    suspend fun recognize(bitmap: Bitmap, area: Rect? = null): List<Block> {
+    suspend fun recognize(bitmap: Bitmap, area: Rect? = null, exclude: List<Rect> = emptyList()): List<Block> {
         val region = area?.let { Rect(it).apply { intersect(0, 0, bitmap.width, bitmap.height) } }
-        val source = if (region != null && !region.isEmpty) {
-            Bitmap.createBitmap(bitmap, region.left, region.top, region.width(), region.height())
-        } else {
+            ?.takeIf { !it.isEmpty }
+            ?: Rect(0, 0, bitmap.width, bitmap.height)
+        val crop = if (region.width() == bitmap.width && region.height() == bitmap.height) {
             bitmap
+        } else {
+            Bitmap.createBitmap(bitmap, region.left, region.top, region.width(), region.height())
         }
-        val dx = if (source !== bitmap) region!!.left else 0
-        val dy = if (source !== bitmap) region!!.top else 0
-        val text = try {
-            recognizer.process(InputImage.fromBitmap(source, 0)).await()
+        try {
+            var lines = recognizeLines(crop, 1f, region)
+            // Мелкие буквы распознаются с ошибками — увеличиваем снимок вдвое и пробуем ещё раз.
+            val heights = lines.map { lineHeight(it) }.sorted()
+            val median = if (heights.isEmpty()) 0f else heights[heights.size / 2]
+            if (heights.isNotEmpty() && median < SMALL_TEXT_PX && crop.width * 2 <= MAX_UPSCALED_SIDE &&
+                crop.height * 2 <= MAX_UPSCALED_SIDE
+            ) {
+                val upscaled = runCatching { Bitmap.createScaledBitmap(crop, crop.width * 2, crop.height * 2, true) }
+                    .getOrNull()
+                if (upscaled != null) {
+                    try {
+                        val better = recognizeLines(upscaled, 2f, region)
+                        val letters = { list: List<PageLayout.Line> -> list.sumOf { l -> l.text.count { it.isLetter() } } }
+                        AppLog.i("Мелкий текст (строка ${median.toInt()} px): увеличил вдвое, букв ${letters(lines)} → ${letters(better)}")
+                        if (letters(better) >= letters(lines)) lines = better
+                    } finally {
+                        upscaled.recycle()
+                    }
+                }
+            }
+            val boxes = exclude.map { PageLayout.Box(it.left, it.top, it.right, it.bottom) }
+            val result = PageLayout.build(lines, bitmap.width, boxes)
+            AppLog.i(
+                "Сборка страницы: строк ${lines.size}, отброшено ${result.dropped}, " +
+                    "наклон ${"%.1f".format(result.angle)}°, абзацев ${result.paragraphs.size}"
+            )
+            return result.paragraphs.map {
+                Block(it.text, Rect(it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom), it.lineHeight)
+            }
         } finally {
-            if (source !== bitmap) source.recycle()
-        }
-        val raw = text.textBlocks.mapNotNull { block ->
-            val bounds = block.boundingBox?.apply { offset(dx, dy) } ?: return@mapNotNull null
-            val joined = joinLines(block.lines)
-            val heights = block.lines.mapNotNull { it.boundingBox?.height() }
-            val lineHeight = if (heights.isEmpty()) bounds.height() else heights.sum() / heights.size
-            if (joined.length < 2 || joined.none { it.isLetter() }) null else Block(joined, bounds, lineHeight)
-        }
-        return toParagraphs(dropEdgeScraps(raw, bitmap.width), bitmap.width)
-    }
-
-    /**
-     * Обрывки у левого или правого края кадра (например, соседняя страница книги на фото):
-     * короткие и узкие куски, прижатые к краю, отбрасываем.
-     */
-    private fun dropEdgeScraps(blocks: List<Block>, width: Int): List<Block> {
-        val edge = (width * 0.03f).toInt()
-        return blocks.filterNot { b ->
-            val atEdge = b.bounds.left <= edge || b.bounds.right >= width - edge
-            atEdge && (b.text.length < 25 || b.bounds.width() < width * 0.15f)
+            if (crop !== bitmap) crop.recycle()
         }
     }
 
-    /**
-     * Распознавание иногда режет абзац на куски. Склеиваем соседние куски, если они стоят
-     * в одной колонке, между ними почти нет зазора и предыдущий не кончается точкой.
-     */
-    private fun toParagraphs(blocks: List<Block>, width: Int): List<Block> {
-        val sorted = blocks.sortedWith(compareBy({ it.bounds.top }, { it.bounds.left }))
-        val out = mutableListOf<Block>()
-        for (block in sorted) {
-            val last = out.lastOrNull()
-            if (last != null && belongTogether(last, block, width)) {
-                val bounds = Rect(last.bounds).apply { union(block.bounds) }
-                val glue = if (last.text.endsWith("-")) "" else " "
-                val text = last.text.removeSuffix("-") + glue + block.text
-                out[out.size - 1] = Block(text, bounds, (last.lineHeight + block.lineHeight) / 2)
-            } else {
-                out.add(block)
+    /** Строки ML Kit в координатах экрана (с учётом обрезки и увеличения). */
+    private suspend fun recognizeLines(image: Bitmap, scale: Float, region: Rect): List<PageLayout.Line> {
+        val text = recognizer.process(InputImage.fromBitmap(image, 0)).await()
+        val out = mutableListOf<PageLayout.Line>()
+        for (block in text.textBlocks) {
+            for (line in block.lines) {
+                val corners = line.cornerPoints ?: continue
+                if (corners.size < 4) continue
+                out.add(
+                    PageLayout.Line(
+                        line.text,
+                        corners.map { PageLayout.Pt(it.x / scale + region.left, it.y / scale + region.top) },
+                        line.confidence,
+                    )
+                )
             }
         }
         return out
     }
 
-    private fun belongTogether(upper: Block, lower: Block, width: Int): Boolean {
-        val line = maxOf(upper.lineHeight, lower.lineHeight, 1)
-        val gap = lower.bounds.top - upper.bounds.bottom
-        if (gap > line * 0.9f || gap < -line) return false
-        val overlap = minOf(upper.bounds.right, lower.bounds.right) - maxOf(upper.bounds.left, lower.bounds.left)
-        val narrower = minOf(upper.bounds.width(), lower.bounds.width())
-        if (narrower <= 0 || overlap < narrower * 0.6f) return false
-        if (kotlin.math.abs(upper.bounds.left - lower.bounds.left) > width * 0.08f &&
-            kotlin.math.abs(upper.bounds.right - lower.bounds.right) > width * 0.08f
-        ) return false
-        val end = upper.text.trimEnd().lastOrNull() ?: return false
-        return end !in ".!?:;\"»”"
+    private fun lineHeight(line: PageLayout.Line): Float {
+        val a = line.corners[0]
+        val d = line.corners[3]
+        return hypot((d.x - a.x).toDouble(), (d.y - a.y).toDouble()).toFloat()
     }
+
+    /** Строки ниже этой высоты (в пикселях снимка) считаем мелкими. */
+    private const val SMALL_TEXT_PX = 26f
+    private const val MAX_UPSCALED_SIDE = 4096
 
     /** Абзац под прицелом; если прицел чуть промахнулся — ближайший в пределах slop пикселей. */
     fun blockAt(blocks: List<Block>, x: Int, y: Int, slop: Int): Block? {
@@ -153,20 +157,6 @@ object ImageTextFinder {
             .filter { it.second <= slop }
             .minByOrNull { it.second }
             ?.first
-    }
-
-    /** Строки абзаца в одну фразу; перенос со знаком «-» склеивается без пробела. */
-    private fun joinLines(lines: List<Text.Line>): String {
-        val out = StringBuilder()
-        for (line in lines) {
-            val t = line.text.trim()
-            if (t.isEmpty()) continue
-            if (out.isNotEmpty()) {
-                if (out.endsWith("-")) out.setLength(out.length - 1) else out.append(' ')
-            }
-            out.append(t)
-        }
-        return out.toString()
     }
 
     private fun distance(r: Rect, x: Int, y: Int): Double {

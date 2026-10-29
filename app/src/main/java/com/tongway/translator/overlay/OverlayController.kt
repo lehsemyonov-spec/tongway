@@ -434,7 +434,7 @@ class OverlayController(private val service: AccessibilityService) {
                 val screen = screenSize()
                 val half = dp(BAND_HALF_DP)
                 val band = Rect(0, (y - half).coerceAtLeast(0), screen.x, (y + half).coerceAtMost(screen.y))
-                val (blocks, problem) = recognizeScreen(band)
+                val (blocks, problem) = recognizeScreen(band, aim = Point(x, y), exclude = excludedZones(withAppText = false))
                 removeScan()
                 val block = ImageTextFinder.blockAt(blocks, x, y, dp(28))
                 if (block != null) {
@@ -462,6 +462,7 @@ class OverlayController(private val service: AccessibilityService) {
                     found.text,
                     onStatus = { status -> card.showStatus(status) },
                     onDownload = { progress -> card.showDownload(progress) },
+                    fromImage = fromImage,
                 )
                 card.showResult(result)
                 if (!result.alreadyTarget) {
@@ -506,7 +507,7 @@ class OverlayController(private val service: AccessibilityService) {
                 emptyList<ScreenTextFinder.Block>() to "?"
             }
             // Добавляем текст с картинок, если его нет среди обычного текста.
-            val (imageBlocks, imageProblem) = recognizeScreen(null)
+            val (imageBlocks, imageProblem) = recognizeScreen(null, exclude = excludedZones(withAppText = true))
             removeScan()
             val fromImages = imageBlocks
                 .filter { image -> blocks.none { overlapShare(image.bounds, it.bounds) > 0.5f } }
@@ -523,12 +524,12 @@ class OverlayController(private val service: AccessibilityService) {
                 return@launch
             }
             AppLog.i("Перевод экрана в $packageName: ${english.size} кусков текста")
-            showPlates(english.map { it.text to it.bounds })
+            showPlates(english.map { it.text to it.bounds }, fromImage = fromImages.isNotEmpty())
         }
     }
 
     /** Плашки с переводом поверх каждого куска текста и панель внизу. */
-    private suspend fun showPlates(pieces: List<Pair<String, Rect>>) {
+    private suspend fun showPlates(pieces: List<Pair<String, Rect>>, fromImage: Boolean) {
         closeScreenTranslation()
         val screen = screenSize()
         val overlay = ScreenTranslationView(context, pieces.map { it.second })
@@ -547,6 +548,7 @@ class OverlayController(private val service: AccessibilityService) {
                 pieces.map { it.first },
                 onStatus = { status.text = it },
                 onEach = { index, text -> overlay.setTranslation(index, text) },
+                fromImage = fromImage,
             )
             status.text = context.getString(R.string.screen_done, pieces.size) +
                 "\n" + outcome.provider + (outcome.note?.let { " · $it" } ?: "")
@@ -571,7 +573,7 @@ class OverlayController(private val service: AccessibilityService) {
         closePopupWindows()
         removeScan()
         translateJob = scope.launch {
-            val (blocks, problem) = recognizeScreen(null)
+            val (blocks, problem) = recognizeScreen(null, exclude = excludedZones(withAppText = true))
             val english = blocks.filterNot { App.engine.looksCyrillic(it.text) }
             if (english.isEmpty()) {
                 removeScan()
@@ -582,7 +584,7 @@ class OverlayController(private val service: AccessibilityService) {
             }
             if (plates) {
                 removeScan()
-                showPlates(english.map { it.text to it.bounds })
+                showPlates(english.map { it.text to it.bounds }, fromImage = true)
             } else {
                 translatePage(showPopup(anchor), english, packageName)
             }
@@ -596,15 +598,14 @@ class OverlayController(private val service: AccessibilityService) {
         bubble?.busy = true
         try {
             card.showStatus(context.getString(R.string.page_progress, 0, english.size))
-            val translated = arrayOfNulls<String>(english.size)
-            val outcome = App.engine.translateMany(
+            val (translated, outcome) = App.engine.translateDocument(
                 english.map { it.text },
                 onStatus = { card.showStatus(it) },
-                onEach = { index, text -> translated[index] = text },
+                fromImage = true,
             )
             val result = TranslationEngine.Result(
                 english.joinToString("\n\n") { it.text },
-                translated.joinToString("\n\n") { it.orEmpty() },
+                translated,
                 "en",
                 alreadyTarget = false,
                 provider = outcome.provider,
@@ -629,7 +630,11 @@ class OverlayController(private val service: AccessibilityService) {
      * полоса сканирования; потом найденные абзацы обводятся рамками (окно scanView
      * остаётся, его убирает вызывающий). Возвращает абзацы и, если не вышло, причину.
      */
-    private suspend fun recognizeScreen(area: Rect?): Pair<List<ImageTextFinder.Block>, String?> {
+    private suspend fun recognizeScreen(
+        area: Rect?,
+        aim: Point? = null,
+        exclude: List<Rect> = emptyList(),
+    ): Pair<List<ImageTextFinder.Block>, String?> {
         val view = bubble
         view?.alpha = 0f
         val capture = try {
@@ -648,7 +653,16 @@ class OverlayController(private val service: AccessibilityService) {
         return try {
             val started = SystemClock.uptimeMillis()
             // Полоса должна успеть хотя бы раз проехать — так видно, что именно сканируется.
-            val blocks = withContext(Dispatchers.Default) { ImageTextFinder.recognize(bitmap, area) }
+            var blocks = withContext(Dispatchers.Default) { ImageTextFinder.recognize(bitmap, area, exclude) }
+            // Абзац под прицелом выходит за полосу — это не субтитр, а печатный текст:
+            // дочитываем тот же снимок целиком, чтобы взять абзац полностью.
+            if (area != null && aim != null) {
+                val hit = ImageTextFinder.blockAt(blocks, aim.x, aim.y, dp(28))
+                if (hit != null && (hit.bounds.top <= area.top + dp(4) || hit.bounds.bottom >= area.bottom - dp(4))) {
+                    AppLog.i("Абзац под прицелом выходит за полосу — читаю весь снимок")
+                    blocks = withContext(Dispatchers.Default) { ImageTextFinder.recognize(bitmap, null, exclude) }
+                }
+            }
             val elapsed = SystemClock.uptimeMillis() - started
             val minimum = if (area != null) MIN_AREA_SCAN_MS else MIN_SCAN_MS
             if (elapsed < minimum) delay(minimum - elapsed)
@@ -683,6 +697,32 @@ class OverlayController(private val service: AccessibilityService) {
     private fun removeScan() {
         scanView?.let { removeWindow(it) }
         scanView = null
+    }
+
+    /**
+     * Где на снимке текст точно не с картинки: системные панели и клавиатура, а для всего экрана —
+     * ещё и надписи самих приложений (заголовки, кнопки, время), их переводят отдельно.
+     */
+    private suspend fun excludedZones(withAppText: Boolean): List<Rect> = withContext(Dispatchers.Default) {
+        val screen = screenSize()
+        val screenArea = screen.x.toLong() * screen.y
+        val zones = mutableListOf<Rect>()
+        runCatching {
+            for (window in service.windows) {
+                val type = window.type
+                if (type != android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM &&
+                    type != android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD
+                ) continue
+                val r = Rect()
+                window.getBoundsInScreen(r)
+                // Системное окно во весь экран (шторка, панели) не исключаем — иначе исключим всё.
+                if (r.width().toLong() * r.height() < screenArea * 0.4) zones.add(r)
+            }
+            if (withAppText) {
+                zones += ScreenTextFinder.collectAll(service, Rect(0, 0, screen.x, screen.y)).first.map { it.bounds }
+            }
+        }.onFailure { AppLog.e("Не удалось определить зоны без картинки", it) }
+        zones
     }
 
     /** Какая доля прямоугольника a перекрыта прямоугольником b. */

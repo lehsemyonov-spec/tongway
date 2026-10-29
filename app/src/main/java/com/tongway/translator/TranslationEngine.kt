@@ -95,6 +95,7 @@ class TranslationEngine(private val context: Context) {
         text: String,
         onStatus: (String) -> Unit,
         onDownload: (ModelDownloadWatcher.Progress) -> Unit = {},
+        fromImage: Boolean = false,
     ): Result {
         val tag = runCatching { languageId.identifyLanguage(text).await() }
             .onFailure { AppLog.e("Не удалось определить язык", it) }
@@ -117,7 +118,9 @@ class TranslationEngine(private val context: Context) {
             for ((provider, key) in chain) {
                 try {
                     onStatus("Перевожу нейросетью (${provider.title})…")
-                    val translated = withModel(provider) { model -> CloudClient.translateOne(provider, key, model, text) }
+                    val translated = withModel(provider) { model ->
+                        CloudClient.translateOne(provider, key, model, text, fromImage)
+                    }
                     cloudCache[text] = translated to provider.title
                     return Result(text, translated, source, alreadyTarget = false, provider = provider.title)
                 } catch (e: CloudClient.CloudException) {
@@ -153,6 +156,7 @@ class TranslationEngine(private val context: Context) {
         texts: List<String>,
         onStatus: (String) -> Unit,
         onEach: (Int, String) -> Unit,
+        fromImage: Boolean = false,
     ): Outcome {
         val done = BooleanArray(texts.size)
         val chain = chain()
@@ -168,25 +172,41 @@ class TranslationEngine(private val context: Context) {
         }
         val problems = mutableListOf<String>()
         val pending = texts.indices.filter { !done[it] }
-        // Каждая порция идёт в первый сервис цепочки, который ответит.
+        // Каждая порция идёт в первый сервис цепочки, который ответит. Куски пронумерованы:
+        // если нейросеть какие-то пропустила, досылаем только их (один раз).
         for (chunk in chunks(pending.map { it to texts[it] })) {
+            var left = chunk
             for ((provider, key) in chain) {
-                try {
-                    onStatus("Перевожу нейросетью (${provider.title}): ${chunk.size} кусков одним запросом…")
-                    val out = withModel(provider) { model ->
-                        CloudClient.translateMany(provider, key, model, chunk.map { it.second })
+                var attempt = 0
+                while (left.isNotEmpty() && attempt < 2) {
+                    attempt++
+                    try {
+                        onStatus("Перевожу нейросетью (${provider.title}): ${left.size} кусков одним запросом…")
+                        val sending = left
+                        val out = withModel(provider) { model ->
+                            CloudClient.translateMany(provider, key, model, sending.map { it.second }, fromImage)
+                        }
+                        val missing = mutableListOf<Pair<Int, String>>()
+                        sending.forEachIndexed { j, (index, original) ->
+                            val translated = out[j]
+                            if (translated == null) {
+                                missing.add(index to original)
+                            } else {
+                                cloudCache[original] = translated to provider.title
+                                done[index] = true
+                                onEach(index, translated)
+                            }
+                        }
+                        if (sending.size > missing.size) usedBy.add(provider.title)
+                        if (missing.isNotEmpty()) AppLog.i("${provider.title} пропустил ${missing.size} из ${sending.size} кусков, дошлю")
+                        left = missing
+                    } catch (e: CloudClient.CloudException) {
+                        AppLog.i("${provider.title} не перевёл ${left.size} кусков: ${e.reason}")
+                        problems.add("${provider.title}: ${e.reason}")
+                        break
                     }
-                    chunk.forEachIndexed { j, (index, original) ->
-                        cloudCache[original] = out[j] to provider.title
-                        done[index] = true
-                        onEach(index, out[j])
-                    }
-                    usedBy.add(provider.title)
-                    break
-                } catch (e: CloudClient.CloudException) {
-                    AppLog.i("${provider.title} не перевёл ${chunk.size} кусков: ${e.reason}")
-                    problems.add("${provider.title}: ${e.reason}")
                 }
+                if (left.isEmpty()) break
             }
         }
         val rest = texts.indices.filter { !done[it] }
@@ -197,6 +217,60 @@ class TranslationEngine(private val context: Context) {
         if (rest.isNotEmpty()) usedBy.add(PROVIDER_PHONE)
         val note = problems.distinct().joinToString("; ").ifEmpty { null }.takeIf { rest.isNotEmpty() }
         return Outcome(usedBy.joinToString(" + ").ifEmpty { PROVIDER_PHONE }, note)
+    }
+
+    /**
+     * «Весь текст»: абзацы страницы одним связным документом (через пустую строку) —
+     * перевод получается связным, и кусков потерять нельзя. Длинное — порциями по абзацам.
+     * Если нейросеть не ответила, абзацы переводятся на телефоне.
+     */
+    suspend fun translateDocument(
+        paragraphs: List<String>,
+        onStatus: (String) -> Unit,
+        fromImage: Boolean,
+    ): Pair<String, Outcome> {
+        val chain = chain()
+        val problems = mutableListOf<String>()
+        val parts = mutableListOf<String>()
+        val usedBy = linkedSetOf<String>()
+        val groups = chunks(paragraphs.mapIndexed { i, p -> i to p }).map { group -> group.map { it.second } }
+        for ((n, group) in groups.withIndex()) {
+            val text = group.joinToString("\n\n")
+            val cached = cloudCache[text]
+            if (cached != null) {
+                parts.add(cached.first)
+                usedBy.add(cached.second)
+                continue
+            }
+            var translated: String? = null
+            for ((provider, key) in chain) {
+                try {
+                    onStatus(
+                        "Перевожу весь текст нейросетью (${provider.title})…" +
+                            if (groups.size > 1) " часть ${n + 1} из ${groups.size}" else ""
+                    )
+                    translated = withModel(provider) { model ->
+                        CloudClient.translateDocument(provider, key, model, text, fromImage)
+                    }
+                    cloudCache[text] = translated to provider.title
+                    usedBy.add(provider.title)
+                    break
+                } catch (e: CloudClient.CloudException) {
+                    AppLog.i("${provider.title} не перевёл весь текст: ${e.reason}")
+                    problems.add("${provider.title}: ${e.reason}")
+                }
+            }
+            if (translated == null) {
+                usedBy.add(PROVIDER_PHONE)
+                translated = group.mapIndexed { i, paragraph ->
+                    onStatus("Перевожу на телефоне… абзац ${i + 1} из ${group.size}")
+                    translateEnglish(paragraph)
+                }.joinToString("\n\n")
+            }
+            parts.add(translated)
+        }
+        val note = problems.distinct().joinToString("; ").ifEmpty { null }.takeIf { PROVIDER_PHONE in usedBy }
+        return parts.joinToString("\n\n") to Outcome(usedBy.joinToString(" + ").ifEmpty { PROVIDER_PHONE }, note)
     }
 
     /** Проверка ключа: переводит короткую фразу. Возвращает перевод и модель. */

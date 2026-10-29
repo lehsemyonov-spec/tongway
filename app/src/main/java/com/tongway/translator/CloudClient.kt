@@ -62,10 +62,24 @@ object CloudClient {
             "Reply with the translation only: no comments, no quotes, no explanations."
 
     private const val SYSTEM_MANY =
-        "You are a professional translator. The user sends a JSON array of English text fragments " +
-            "from one screen or page. Translate every fragment into Russian, using the other fragments " +
-            "as context. Keep the meaning, tone, terminology, numbers and names. " +
-            "Reply with a JSON array of strings of exactly the same length and order, and nothing else."
+        "You are a professional translator. The user sends a JSON object whose keys are fragment numbers " +
+            "and whose values are English text fragments from one screen or page. Translate every fragment " +
+            "into Russian, using the other fragments as context. Keep the meaning, tone, terminology, numbers " +
+            "and names. Reply with a JSON object with exactly the same keys, each value being the Russian " +
+            "translation of that fragment. Never merge, split or skip fragments. Reply with the JSON only."
+
+    private const val SYSTEM_DOCUMENT =
+        "You are a professional translator. Translate the user's English document into Russian as one " +
+            "coherent text. Keep the meaning, tone, terminology, numbers and names. Paragraphs are separated " +
+            "by blank lines: keep exactly the same paragraphs, separated by blank lines. " +
+            "Reply with the translation only: no comments, no headings of your own."
+
+    /** Добавка к заданию, если текст распознан с фото. */
+    private const val OCR_NOTE =
+        " The text was recognized from a photo (OCR), so it may contain recognition errors: letters " +
+            "confused with digits or symbols (e.g. 'S00m' for '\$500m', '239%' for '23%', 'L' for '£', 'rn' for 'm'), " +
+            "broken words or stray characters. Silently fix obvious recognition errors using the context, " +
+            "but do not add or remove content."
 
     /** Модели, подходящие для перевода текста. */
     suspend fun models(provider: CloudProvider, key: String?): List<Model> = withContext(Dispatchers.IO) {
@@ -101,21 +115,48 @@ object CloudClient {
         return models.maxByOrNull { it.contextLength }
     }
 
-    suspend fun translateOne(provider: CloudProvider, key: String, model: String, text: String): String =
-        withContext(Dispatchers.IO) { clean(chat(provider, key, model, SYSTEM_ONE, text)) }
+    suspend fun translateOne(provider: CloudProvider, key: String, model: String, text: String, ocr: Boolean = false): String =
+        withContext(Dispatchers.IO) { clean(chat(provider, key, model, SYSTEM_ONE + if (ocr) OCR_NOTE else "", text)) }
 
-    /** Несколько кусков одним запросом — так тратится один запрос из дневного лимита, а не десятки. */
-    suspend fun translateMany(provider: CloudProvider, key: String, model: String, texts: List<String>): List<String> =
-        withContext(Dispatchers.IO) {
-            val reply = clean(chat(provider, key, model, SYSTEM_MANY, JSONArray(texts).toString()))
-            val start = reply.indexOf('[')
-            val end = reply.lastIndexOf(']')
-            if (start < 0 || end <= start) throw CloudException("нейросеть ответила не в том виде")
-            val array = runCatching { JSONArray(reply.substring(start, end + 1)) }
-                .getOrElse { throw CloudException("нейросеть ответила не в том виде") }
-            if (array.length() != texts.size) throw CloudException("нейросеть перевела не все куски")
-            List(array.length()) { array.optString(it) }
+    /** Связный документ (абзацы через пустую строку) одним запросом. */
+    suspend fun translateDocument(provider: CloudProvider, key: String, model: String, text: String, ocr: Boolean): String =
+        withContext(Dispatchers.IO) { clean(chat(provider, key, model, SYSTEM_DOCUMENT + if (ocr) OCR_NOTE else "", text)) }
+
+    /**
+     * Несколько кусков одним запросом — так тратится один запрос из дневного лимита, а не десятки.
+     * Куски пронумерованы; возвращаются те, что нейросеть вернула (пропущенные — null).
+     */
+    suspend fun translateMany(
+        provider: CloudProvider,
+        key: String,
+        model: String,
+        texts: List<String>,
+        ocr: Boolean = false,
+    ): List<String?> = withContext(Dispatchers.IO) {
+        val input = JSONObject()
+        texts.forEachIndexed { i, t -> input.put((i + 1).toString(), t) }
+        val reply = clean(chat(provider, key, model, SYSTEM_MANY + if (ocr) OCR_NOTE else "", input.toString()))
+        parseNumbered(reply, texts.size) ?: throw CloudException("нейросеть ответила не в том виде")
+    }
+
+    /** Разбирает ответ: объект {"1": "...", ...} или, на всякий случай, массив. */
+    private fun parseNumbered(reply: String, count: Int): List<String?>? {
+        val objStart = reply.indexOf('{')
+        val objEnd = reply.lastIndexOf('}')
+        if (objStart >= 0 && objEnd > objStart) {
+            runCatching { JSONObject(reply.substring(objStart, objEnd + 1)) }.getOrNull()?.let { obj ->
+                return List(count) { i -> obj.optString((i + 1).toString()).takeIf { it.isNotBlank() } }
+            }
         }
+        val arrStart = reply.indexOf('[')
+        val arrEnd = reply.lastIndexOf(']')
+        if (arrStart >= 0 && arrEnd > arrStart) {
+            runCatching { JSONArray(reply.substring(arrStart, arrEnd + 1)) }.getOrNull()?.let { arr ->
+                if (arr.length() == count) return List(count) { i -> arr.optString(i).takeIf { it.isNotBlank() } }
+            }
+        }
+        return null
+    }
 
     private fun chat(provider: CloudProvider, key: String, model: String, system: String, user: String): String {
         val payload = JSONObject()
