@@ -60,6 +60,13 @@ android {
         buildConfig = true
     }
 
+    // Части программы для процессора храним сжатыми: файл для скачивания меньше (иначе ~53 МБ).
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     // Проверка стиля кода не должна останавливать сборку окончательной версии.
     lint {
         checkReleaseBuilds = false
