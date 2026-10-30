@@ -101,6 +101,12 @@ class OverlayController(private val service: AccessibilityService) {
     private var fingerCanvas: FingerCanvasView? = null
     private var fingerBar: View? = null
     private var fingerCapture: Deferred<ImageTextFinder.Capture>? = null
+    private var fingerParams: WindowManager.LayoutParams? = null
+    /** Жест двумя пальцами передаётся приложению под слоем — чтобы можно было приближать фото. */
+    private val gesturePasser = GesturePasser(service) {
+        // Слой снова ловит палец чуть позже, чтобы последние повторённые касания успели дойти до приложения.
+        fingerCanvas?.postDelayed({ if (!gesturePasser.isActive) setFingerTouchable(true) }, 80)
+    }
     private var lastFingerExit = 0L
     /** Меню по касанию кружка ждёт, не будет ли второго касания (двойное — пальцевый режим). */
     private var pendingMenu: Runnable? = null
@@ -337,6 +343,7 @@ class OverlayController(private val service: AccessibilityService) {
         }
         if (!addWindow(canvas, params)) return
         fingerCanvas = canvas
+        fingerParams = params
 
         val bar = LayoutInflater.from(context).inflate(R.layout.finger_bar, null)
         bar.findViewById<View>(R.id.fingerBarClose).setOnClickListener { exitFingerMode() }
@@ -368,8 +375,10 @@ class OverlayController(private val service: AccessibilityService) {
         fingerCapture?.cancel()
         fingerCapture = null
         dismissPopup()
+        gesturePasser.end()
         removeWindow(canvas)
         fingerCanvas = null
+        fingerParams = null
         fingerBar?.let { removeWindow(it) }
         fingerBar = null
         bubble?.fingerMode = false
@@ -404,6 +413,39 @@ class OverlayController(private val service: AccessibilityService) {
             translateJob?.cancel()
             translateJob = scope.launch { translateStroke(capture, points) }
         }
+
+        override fun onMultiTouchStart(points: Map<Int, android.graphics.PointF>) {
+            // Это не перевод: снимок не нужен, линию стёрли. Слой на время жеста пропускает касания
+            // к приложению, а движение пальцев повторяется для него через службу.
+            fingerCapture?.cancel()
+            fingerCapture = null
+            fingerCanvas?.hideStroke = false
+            setFingerTouchable(false)
+            gesturePasser.start(points)
+        }
+
+        override fun onMultiTouchMove(points: Map<Int, android.graphics.PointF>) = gesturePasser.move(points)
+
+        override fun onMultiTouchPointerUp(id: Int) = gesturePasser.pointerUp(id)
+
+        override fun onMultiTouchEnd() {
+            gesturePasser.end()
+            if (!gesturePasser.isActive) setFingerTouchable(true)
+        }
+    }
+
+    /** Слой для пальца ловит касания (рисование) или пропускает их к приложению (жест двумя пальцами). */
+    private fun setFingerTouchable(touchable: Boolean) {
+        val canvas = fingerCanvas ?: return
+        val params = fingerParams ?: return
+        val flags = if (touchable) {
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        } else {
+            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+        if (flags == params.flags) return
+        params.flags = flags
+        runCatching { windowManager.updateViewLayout(canvas, params) }
     }
 
     private suspend fun translateStroke(captureJob: Deferred<ImageTextFinder.Capture>, points: List<PageLayout.Pt>) {

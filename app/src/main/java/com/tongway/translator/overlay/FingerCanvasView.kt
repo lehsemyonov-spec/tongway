@@ -81,7 +81,15 @@ class FingerCanvasView(context: Context, private val listener: Listener) : View(
         fun onStrokeStart()
         /** Точки линии в координатах экрана. */
         fun onStrokeEnd(points: List<PageLayout.Pt>)
+        /** Коснулись вторым пальцем — это не перевод, а жест для приложения (приблизить фото). */
+        fun onMultiTouchStart(points: Map<Int, PointF>)
+        fun onMultiTouchMove(points: Map<Int, PointF>)
+        fun onMultiTouchPointerUp(id: Int)
+        fun onMultiTouchEnd()
     }
+
+    /** Сейчас идёт жест двумя и более пальцами — линию не рисуем, движение передаём приложению. */
+    private var multiTouch = false
 
     var strokeWidthPx = 40f
 
@@ -128,8 +136,41 @@ class FingerCanvasView(context: Context, private val listener: Listener) : View(
         invalidate()
     }
 
+    /** Все пальцы события в координатах экрана. */
+    private fun pointersOf(event: MotionEvent): Map<Int, PointF> {
+        getLocationOnScreen(location)
+        return (0 until event.pointerCount).associate { i ->
+            event.getPointerId(i) to PointF(event.getX(i) + location[0], event.getY(i) + location[1])
+        }
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        // Новое касание всегда начинается с чистого листа.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) multiTouch = false
+        // Два и более пальца — приближение или перемещение фото: линию стираем, жест отдаём приложению.
+        if (multiTouch || event.pointerCount > 1) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (!multiTouch) {
+                        multiTouch = true
+                        points.clear()
+                        marks = emptyList()
+                        invalidate()
+                        listener.onMultiTouchStart(pointersOf(event))
+                    } else {
+                        listener.onMultiTouchMove(pointersOf(event))
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> listener.onMultiTouchMove(pointersOf(event))
+                MotionEvent.ACTION_POINTER_UP -> listener.onMultiTouchPointerUp(event.getPointerId(event.actionIndex))
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    multiTouch = false
+                    listener.onMultiTouchEnd()
+                }
+            }
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 points.clear()
