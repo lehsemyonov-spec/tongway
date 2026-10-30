@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Главная кнопка: объёмная оранжевая, светлее сверху, со светлой каймой. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#55FFFFFF">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:endColor="@color/accent"
+                android:startColor="@color/accent_light" />
+            <stroke android:width="1.5dp" android:color="#FFC79E" />
+            <corners android:radius="999dp" />
+        </shape>
+    </item>
+</ripple>

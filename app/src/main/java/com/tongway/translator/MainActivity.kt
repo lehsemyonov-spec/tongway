@@ -70,6 +70,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<View>(R.id.btnHowTo).setOnClickListener { showHowTo() }
         findViewById<View>(R.id.btnTestTranslate).setOnClickListener { testTranslate() }
         findViewById<View>(R.id.statusCard).setOnClickListener { showSteps() }
+        findViewById<View>(R.id.btnExit).setOnClickListener { askExit() }
         findViewById<View>(R.id.btnMenu).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -178,6 +179,15 @@ class MainActivity : AppCompatActivity() {
             statusTitle.text = if (left == 1) getString(R.string.status_left_one) else getString(R.string.status_left_many, left)
             statusText.setText(R.string.status_left_text)
         }
+    }
+
+    /** Стрелочка на главном экране — спросить, выйти ли из приложения. */
+    private fun askExit() {
+        AlertDialog.Builder(this)
+            .setMessage(R.string.exit_question)
+            .setPositiveButton(R.string.exit_yes) { _, _ -> finishAffinity() }
+            .setNegativeButton(R.string.exit_stay, null)
+            .show()
     }
 
     /** Какие шаги готовы, а какие нет; кнопка сразу делает первый недостающий шаг. */

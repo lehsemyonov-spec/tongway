@@ -30,10 +30,14 @@
                 android:src="@drawable/deco_burger" />
 
             <ImageView
+                android:id="@+id/btnExit"
                 android:layout_width="36dp"
                 android:layout_height="18dp"
                 android:layout_marginStart="10dp"
-                android:importantForAccessibility="no"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:clickable="true"
+                android:contentDescription="@string/exit_yes"
+                android:focusable="true"
                 android:src="@drawable/deco_toggle" />
 
             <Space
@@ -94,38 +98,35 @@
                 android:layout_weight="38" />
         </LinearLayout>
 
-        <!-- Пилюля-переключатель, как «Search | Начать» на первом слайде. -->
-        <LinearLayout
+        <!-- Главная кнопка: объёмная, со значком и тенью — чтобы было видно, что это кнопка. -->
+        <TextView
+            android:id="@+id/btnBubble"
             android:layout_width="match_parent"
-            android:layout_height="46dp"
-            android:layout_marginTop="18dp"
-            android:background="@drawable/bg_segment"
-            android:orientation="horizontal">
+            android:layout_height="58dp"
+            android:layout_marginTop="20dp"
+            android:background="@drawable/bg_button_main"
+            android:clickable="true"
+            android:drawableStart="@drawable/ic_translate"
+            android:drawablePadding="12dp"
+            android:elevation="10dp"
+            android:focusable="true"
+            android:fontFamily="@font/unbounded"
+            android:gravity="center"
+            android:outlineAmbientShadowColor="@color/accent"
+            android:outlineSpotShadowColor="@color/accent"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:stateListAnimator="@animator/press_scale"
+            android:text="@string/bubble_show"
+            android:textColor="@color/text"
+            android:textSize="16sp" />
 
-            <TextView
-                android:id="@+id/btnHowTo"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@drawable/bg_segment_left"
-                android:clickable="true"
-                android:focusable="true"
-                android:fontFamily="@font/inter_medium"
-                android:gravity="center"
-                android:text="@string/how_to"
-                android:textColor="@color/text"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/btnBubble"
-                style="@style/Tongway.Pill"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_marginTop="0dp"
-                android:layout_weight="1"
-                android:minHeight="0dp"
-                android:text="@string/bubble_show" />
-        </LinearLayout>
+        <TextView
+            android:id="@+id/btnHowTo"
+            style="@style/Tongway.Pill.Outline"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/how_to" />
 
         <TextView
             style="@style/Tongway.H2"

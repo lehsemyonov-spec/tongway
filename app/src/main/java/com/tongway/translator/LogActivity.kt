@@ -9,6 +9,8 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.tongway.translator.ui.TechBackgroundDrawable
+import com.tongway.translator.ui.flashCopied
+import com.tongway.translator.ui.goHome
 
 class LogActivity : AppCompatActivity() {
 
@@ -22,11 +24,11 @@ class LogActivity : AppCompatActivity() {
         logText = findViewById(R.id.logText)
         logScroll = findViewById(R.id.logScroll)
 
-        findViewById<View>(R.id.btnBack).setOnClickListener { finish() }
+        findViewById<View>(R.id.btnBack).setOnClickListener { goHome() }
         findViewById<View>(R.id.btnCopy).setOnClickListener {
             val clipboard = getSystemService(ClipboardManager::class.java)
             clipboard.setPrimaryClip(ClipData.newPlainText("Журнал Tongway", AppLog.report()))
-            Toast.makeText(this, R.string.log_copied, Toast.LENGTH_SHORT).show()
+            (it as TextView).flashCopied()
         }
         findViewById<View>(R.id.btnClear).setOnClickListener {
             AppLog.clear()

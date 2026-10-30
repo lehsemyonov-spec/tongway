@@ -24,6 +24,7 @@ import com.google.android.material.slider.Slider
 import com.tongway.translator.overlay.BubbleView
 import com.tongway.translator.overlay.FingerStrokePreview
 import com.tongway.translator.ui.TechBackgroundDrawable
+import com.tongway.translator.ui.goHome
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -39,7 +40,7 @@ class SettingsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         window.setBackgroundDrawable(TechBackgroundDrawable(this))
         setContentView(R.layout.activity_settings)
-        findViewById<View>(R.id.btnBack).setOnClickListener { finish() }
+        findViewById<View>(R.id.btnBack).setOnClickListener { goHome() }
 
         setupTranslator()
         setupFinger()

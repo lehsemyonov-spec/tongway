@@ -17,6 +17,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.tongway.translator.ui.TechBackgroundDrawable
+import com.tongway.translator.ui.goHome
 
 /** История переводов кружком: поиск, копирование, удаление. */
 class HistoryActivity : AppCompatActivity() {
@@ -36,7 +37,7 @@ class HistoryActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@HistoryActivity)
             adapter = this@HistoryActivity.adapter
         }
-        findViewById<View>(R.id.btnBack).setOnClickListener { finish() }
+        findViewById<View>(R.id.btnBack).setOnClickListener { goHome() }
         findViewById<View>(R.id.btnClear).setOnClickListener {
             AlertDialog.Builder(this)
                 .setMessage(R.string.history_clear_confirm)

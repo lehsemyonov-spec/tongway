@@ -7,6 +7,7 @@ import android.view.View
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.tongway.translator.ui.TechBackgroundDrawable
+import com.tongway.translator.ui.goHome
 
 /** Пошаговая инструкция, как бесплатно получить свой ключ Groq или OpenRouter (для себя и друзей). */
 class KeyHelpActivity : AppCompatActivity() {
@@ -22,7 +23,7 @@ class KeyHelpActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.helpSubtitle).setText(if (groq) R.string.help_subtitle_groq else R.string.help_subtitle)
         findViewById<TextView>(R.id.helpSteps).setText(if (groq) R.string.help_steps_groq else R.string.help_steps)
         findViewById<TextView>(R.id.btnOpenSite).text = getString(R.string.help_open, provider.title)
-        findViewById<View>(R.id.btnBack).setOnClickListener { finish() }
+        findViewById<View>(R.id.btnBack).setOnClickListener { goHome() }
         findViewById<View>(R.id.btnOpenSite).setOnClickListener {
             runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(provider.keysPage))) }
                 .onFailure { AppLog.e("Не удалось открыть сайт ${provider.title}", it) }

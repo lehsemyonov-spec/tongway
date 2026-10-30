@@ -38,6 +38,7 @@ import com.tongway.translator.SettingsActivity
 import com.tongway.translator.ModelDownloadWatcher
 import com.tongway.translator.ui.MechanicalDnaView
 import com.tongway.translator.ui.TechProgressView
+import com.tongway.translator.ui.flashCopied
 import com.tongway.translator.AppLog
 import com.tongway.translator.Prefs
 import com.tongway.translator.R
@@ -946,7 +947,7 @@ class OverlayController(private val service: AccessibilityService) {
         bar.findViewById<View>(R.id.barCopy).setOnClickListener {
             val clipboard = service.getSystemService(ClipboardManager::class.java)
             clipboard.setPrimaryClip(ClipData.newPlainText("Перевод экрана", overlay.allTranslations()))
-            Toast.makeText(service, R.string.popup_copied, Toast.LENGTH_SHORT).show()
+            (it as TextView).flashCopied()
         }
         if (addWindow(bar, params)) screenBar = bar
         return bar
@@ -1089,7 +1090,7 @@ class OverlayController(private val service: AccessibilityService) {
             btnCopy.setOnClickListener {
                 val clipboard = service.getSystemService(ClipboardManager::class.java)
                 clipboard.setPrimaryClip(ClipData.newPlainText("Перевод", translation.text))
-                Toast.makeText(service, R.string.popup_copied, Toast.LENGTH_SHORT).show()
+                btnCopy.flashCopied()
             }
             root.findViewById<View>(R.id.menuScreen).setOnClickListener { translateScreen() }
             root.findViewById<View>(R.id.menuHistory).setOnClickListener { openActivity(HistoryActivity::class.java) }

@@ -115,6 +115,13 @@ object CloudClient {
         return models.maxByOrNull { it.contextLength }
     }
 
+    /** Все модели в порядке попыток: сначала сильные семейства, внутри — с большим контекстом. */
+    fun rank(provider: CloudProvider, models: List<Model>): List<Model> {
+        fun family(m: Model): Int =
+            provider.preferred.indexOfFirst { m.id.contains(it, ignoreCase = true) }.let { if (it < 0) Int.MAX_VALUE else it }
+        return models.sortedWith(compareBy<Model>({ family(it) }, { -it.contextLength }))
+    }
+
     suspend fun translateOne(provider: CloudProvider, key: String, model: String, text: String, ocr: Boolean = false): String =
         withContext(Dispatchers.IO) {
             checkComplete(text, clean(chat(provider, key, model, SYSTEM_ONE + if (ocr) OCR_NOTE else "", text)))

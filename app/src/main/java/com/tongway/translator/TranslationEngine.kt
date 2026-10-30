@@ -10,8 +10,11 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import android.content.Context
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.tasks.await
 import java.util.Locale
 
@@ -109,26 +112,19 @@ class TranslationEngine(private val context: Context) {
         if (tag != UNDETERMINED && tag != source) AppLog.i("Язык определён как «$tag», перевожу как английский")
 
         var note: String? = null
-        val chain = chain()
-        if (chain.isNotEmpty()) {
+        if (cloudEnabled()) {
             cloudCache[text]?.let { (translated, by) ->
                 return Result(text, translated, source, alreadyTarget = false, provider = by)
             }
             val problems = mutableListOf<String>()
-            for ((provider, key) in chain) {
-                try {
-                    onStatus("Перевожу нейросетью (${provider.title})…")
-                    val translated = withModel(provider) { model ->
-                        CloudClient.translateOne(provider, key, model, text, fromImage)
-                    }
-                    cloudCache[text] = translated to provider.title
-                    return Result(text, translated, source, alreadyTarget = false, provider = provider.title)
-                } catch (e: CloudClient.CloudException) {
-                    AppLog.i("${provider.title} не перевёл: ${e.reason}")
-                    problems.add("${provider.title}: ${e.reason}")
-                }
+            val cloud = runCloud(onStatus, problems) { provider, key, model ->
+                CloudClient.translateOne(provider, key, model, text, fromImage)
             }
-            note = problems.joinToString("; ")
+            if (cloud != null) {
+                cloudCache[text] = cloud.value to cloud.label
+                return Result(text, cloud.value, source, alreadyTarget = false, provider = cloud.label)
+            }
+            note = problems.distinct().joinToString("; ")
         }
 
         if (!isModelDownloaded(source) || !isModelDownloaded(TARGET)) {
@@ -159,10 +155,10 @@ class TranslationEngine(private val context: Context) {
         fromImage: Boolean = false,
     ): Outcome {
         val done = BooleanArray(texts.size)
-        val chain = chain()
+        val cloud = cloudEnabled()
         val usedBy = linkedSetOf<String>()
         texts.forEachIndexed { i, text ->
-            val cached = if (chain.isNotEmpty()) cloudCache[text] else null
+            val cached = if (cloud) cloudCache[text] else null
             val ready = if (looksCyrillic(text)) text else cached?.first
             if (ready != null) {
                 done[i] = true
@@ -172,41 +168,30 @@ class TranslationEngine(private val context: Context) {
         }
         val problems = mutableListOf<String>()
         val pending = texts.indices.filter { !done[it] }
-        // Каждая порция идёт в первый сервис цепочки, который ответит. Куски пронумерованы:
-        // если нейросеть какие-то пропустила, досылаем только их (один раз).
-        for (chunk in chunks(pending.map { it to texts[it] })) {
-            var left = chunk
-            for ((provider, key) in chain) {
-                var attempt = 0
-                while (left.isNotEmpty() && attempt < 2) {
-                    attempt++
-                    try {
-                        onStatus("Перевожу нейросетью (${provider.title}): ${left.size} кусков одним запросом…")
-                        val sending = left
-                        val out = withModel(provider) { model ->
-                            CloudClient.translateMany(provider, key, model, sending.map { it.second }, fromImage)
-                        }
-                        val missing = mutableListOf<Pair<Int, String>>()
-                        sending.forEachIndexed { j, (index, original) ->
-                            val translated = out[j]
-                            if (translated == null) {
-                                missing.add(index to original)
-                            } else {
-                                cloudCache[original] = translated to provider.title
-                                done[index] = true
-                                onEach(index, translated)
-                            }
-                        }
-                        if (sending.size > missing.size) usedBy.add(provider.title)
-                        if (missing.isNotEmpty()) AppLog.i("${provider.title} пропустил ${missing.size} из ${sending.size} кусков, дошлю")
-                        left = missing
-                    } catch (e: CloudClient.CloudException) {
-                        AppLog.i("${provider.title} не перевёл ${left.size} кусков: ${e.reason}")
-                        problems.add("${provider.title}: ${e.reason}")
-                        break
+        // Куски пронумерованы: если нейросеть какие-то пропустила, досылаем только их (один раз).
+        if (cloud) for (chunk in chunks(pending.map { it to texts[it] })) {
+            var left: List<Pair<Int, String>> = chunk
+            var attempt = 0
+            while (left.isNotEmpty() && attempt < 2) {
+                attempt++
+                val sending = left
+                val result = runCloud(onStatus, problems, "${sending.size} кусков одним запросом") { provider, key, model ->
+                    CloudClient.translateMany(provider, key, model, sending.map { it.second }, fromImage)
+                } ?: break
+                val missing = mutableListOf<Pair<Int, String>>()
+                sending.forEachIndexed { j, (index, original) ->
+                    val translated = result.value[j]
+                    if (translated == null) {
+                        missing.add(index to original)
+                    } else {
+                        cloudCache[original] = translated to result.label
+                        done[index] = true
+                        onEach(index, translated)
                     }
                 }
-                if (left.isEmpty()) break
+                if (sending.size > missing.size) usedBy.add(result.label)
+                if (missing.isNotEmpty()) AppLog.i("${result.label} пропустил ${missing.size} из ${sending.size} кусков, дошлю")
+                left = missing
             }
         }
         val rest = texts.indices.filter { !done[it] }
@@ -229,7 +214,7 @@ class TranslationEngine(private val context: Context) {
         onStatus: (String) -> Unit,
         fromImage: Boolean,
     ): Pair<String, Outcome> {
-        val chain = chain()
+        val cloud = cloudEnabled()
         val problems = mutableListOf<String>()
         val parts = mutableListOf<String>()
         val usedBy = linkedSetOf<String>()
@@ -243,21 +228,14 @@ class TranslationEngine(private val context: Context) {
                 continue
             }
             var translated: String? = null
-            for ((provider, key) in chain) {
-                try {
-                    onStatus(
-                        "Перевожу весь текст нейросетью (${provider.title})…" +
-                            if (groups.size > 1) " часть ${n + 1} из ${groups.size}" else ""
-                    )
-                    translated = withModel(provider) { model ->
-                        CloudClient.translateDocument(provider, key, model, text, fromImage)
-                    }
-                    cloudCache[text] = translated to provider.title
-                    usedBy.add(provider.title)
-                    break
-                } catch (e: CloudClient.CloudException) {
-                    AppLog.i("${provider.title} не перевёл весь текст: ${e.reason}")
-                    problems.add("${provider.title}: ${e.reason}")
+            if (cloud) {
+                val what = "весь текст" + if (groups.size > 1) ", часть ${n + 1} из ${groups.size}" else ""
+                runCloud(onStatus, problems, what) { provider, key, model ->
+                    CloudClient.translateDocument(provider, key, model, text, fromImage)
+                }?.let { result ->
+                    translated = result.value
+                    cloudCache[text] = result.value to result.label
+                    usedBy.add(result.label)
                 }
             }
             if (translated == null) {
@@ -269,80 +247,129 @@ class TranslationEngine(private val context: Context) {
                 outcome.note?.let { problems.add(it) }
                 translated = pieces.joinToString("\n\n") { it.orEmpty() }
             }
-            parts.add(translated)
+            parts.add(translated.orEmpty())
         }
         val note = problems.distinct().joinToString("; ").ifEmpty { null }.takeIf { PROVIDER_PHONE in usedBy }
         return parts.joinToString("\n\n") to Outcome(usedBy.joinToString(" + ").ifEmpty { PROVIDER_PHONE }, note)
     }
 
-    /** Проверка ключа: переводит короткую фразу. Возвращает перевод и модель. */
+    /** Проверка ключа: переводит короткую фразу, перебирая модели сервиса. Возвращает перевод и модель. */
     suspend fun checkCloud(provider: CloudProvider, key: String): Pair<String, String> {
-        var used = ""
-        val text = withModel(provider, key) { model ->
-            used = model
-            CloudClient.translateOne(provider, key, model, "The weather is lovely today, let's go for a walk.")
-        }
-        return text to used
+        val problems = mutableListOf<String>()
+        val result = tryModels(provider, key, onStatus = {}, problems = problems, what = null, limit = Int.MAX_VALUE) { p, k, m ->
+            CloudClient.translateOne(p, k, m, "The weather is lovely today, let's go for a walk.")
+        } ?: throw CloudClient.CloudException(problems.lastOrNull()?.substringAfter(": ") ?: "не удалось перевести")
+        return result.value to result.model
     }
 
-    /** Сервисы с ключами в порядке цепочки; пусто — переводим на телефоне. */
-    private fun chain(): List<Pair<CloudProvider, String>> {
-        if (Prefs.provider(context) != Prefs.PROVIDER_CLOUD) return emptyList()
-        return CloudProvider.CHAIN.mapNotNull { provider ->
-            SecretStore.apiKey(context, provider)?.takeIf { it.isNotBlank() }?.let { provider to it }
-        }
+    private fun cloudEnabled(): Boolean =
+        Prefs.provider(context) == Prefs.PROVIDER_CLOUD && CloudProvider.entries.any { keyOf(it) != null }
+
+    private fun keyOf(provider: CloudProvider): String? = SecretStore.apiKey(context, provider)?.takeIf { it.isNotBlank() }
+
+    /** Успешный ответ нейросети: что перевела, какой сервис и какая модель. */
+    private class Cloud<T>(val value: T, val provider: CloudProvider, val model: String) {
+        val label: String get() = "${provider.title} · ${shortModel(model)}"
     }
 
     /**
-     * Выполняет запрос с выбранной моделью. Если модель выбирается автоматически и она пропала
-     * из бесплатных, берём другую и пробуем ещё раз.
+     * Порядок, о котором попросил пользователь:
+     * 1) Groq — перебираем все его модели по очереди (в карточке видно, какая модель сейчас пробуется);
+     * 2) если все модели Groq не ответили — OpenRouter и ещё один круг Groq параллельно,
+     *    берём того, кто ответит первым, второго останавливаем;
+     * 3) не вышло ни там, ни там — вернём null, и переведёт телефон.
      */
-    private suspend fun <T> withModel(
-        provider: CloudProvider,
-        key: String? = SecretStore.apiKey(context, provider),
-        block: suspend (String) -> T,
-    ): T {
-        val manual = Prefs.model(context, provider)
-        if (manual.isNotEmpty()) {
-            Prefs.addUsage(context, provider)
-            return block(manual)
+    private suspend fun <T> runCloud(
+        onStatus: (String) -> Unit,
+        problems: MutableList<String>,
+        what: String? = null,
+        call: suspend (CloudProvider, String, String) -> T,
+    ): Cloud<T>? {
+        val groqKey = keyOf(CloudProvider.GROQ)
+        val routerKey = keyOf(CloudProvider.OPENROUTER)
+        if (groqKey != null) {
+            tryModels(CloudProvider.GROQ, groqKey, onStatus, problems, what, Int.MAX_VALUE, call)?.let { return it }
         }
-        // Автовыбор: если модель пропала, перегружена или упёрлась в лимит — пробуем ещё до двух других.
-        val tried = mutableSetOf<String>()
-        var model = autoModel(provider, key, refresh = false, exclude = tried)
-        while (true) {
-            Prefs.addUsage(context, provider)
-            try {
-                val result = block(model)
-                Prefs.setAutoModel(context, provider, model)
-                return result
-            } catch (e: CloudClient.CloudException) {
-                tried.add(model)
-                if (!e.tryOtherModel || tried.size >= MAX_MODEL_TRIES) throw e
-                AppLog.i("${provider.title}, модель $model: ${e.reason}, пробую другую")
-                model = autoModel(provider, key, refresh = true, exclude = tried)
+        return coroutineScope {
+            val racers = buildList {
+                if (routerKey != null) {
+                    add(async { tryModels(CloudProvider.OPENROUTER, routerKey, onStatus, problems, what, ROUTER_TRIES, call) })
+                }
+                if (groqKey != null) {
+                    add(async {
+                        delay(GROQ_RETRY_PAUSE_MS)
+                        tryModels(CloudProvider.GROQ, groqKey, onStatus, problems, what, Int.MAX_VALUE, call)
+                    })
+                }
             }
+            if (racers.isEmpty()) return@coroutineScope null
+            if (routerKey != null && groqKey != null) AppLog.i("Все модели Groq не ответили — Groq и OpenRouter наперегонки")
+            val waiting = racers.toMutableList()
+            var winner: Cloud<T>? = null
+            while (waiting.isNotEmpty() && winner == null) {
+                val (done, value) = select<Pair<kotlinx.coroutines.Deferred<Cloud<T>?>, Cloud<T>?>> {
+                    waiting.forEach { racer -> racer.onAwait { racer to it } }
+                }
+                waiting.remove(done)
+                winner = value
+            }
+            waiting.forEach { it.cancel() }
+            winner?.let { AppLog.i("Первым ответил ${it.label}") }
+            winner
         }
     }
 
-    /** Бесплатная модель для перевода; список обновляется раз в сутки. */
-    private suspend fun autoModel(provider: CloudProvider, key: String?, refresh: Boolean, exclude: Set<String>): String {
-        val (cached, time) = Prefs.autoModel(context, provider)
-        if (!refresh && cached.isNotEmpty() && cached !in exclude && System.currentTimeMillis() - time < DAY_MS) {
-            return cached
+    /** Пробует модели сервиса по очереди, пока одна не ответит. Ошибки — в problems. */
+    private suspend fun <T> tryModels(
+        provider: CloudProvider,
+        key: String,
+        onStatus: (String) -> Unit,
+        problems: MutableList<String>,
+        what: String?,
+        limit: Int,
+        call: suspend (CloudProvider, String, String) -> T,
+    ): Cloud<T>? {
+        val models = try {
+            orderedModels(provider, key)
+        } catch (e: CloudClient.CloudException) {
+            problems.add("${provider.title}: ${e.reason}")
+            AppLog.i("${provider.title}: ${e.reason}")
+            return null
         }
-        val models = (modelsCache[provider] ?: try {
+        for (model in models.take(limit)) {
+            onStatus("Перевожу нейросетью: ${provider.title} · ${shortModel(model)}" + (what?.let { " ($it)" } ?: "") + "…")
+            Prefs.addUsage(context, provider)
+            try {
+                val value = call(provider, key, model)
+                Prefs.setAutoModel(context, provider, model)
+                return Cloud(value, provider, model)
+            } catch (e: CloudClient.CloudException) {
+                AppLog.i("${provider.title} · $model: ${e.reason}")
+                problems.add("${provider.title}: ${e.reason}")
+                // Неверный ключ, нет сети, доступ запрещён — другие модели этого сервиса не помогут.
+                if (!e.tryOtherModel) return null
+            }
+        }
+        return null
+    }
+
+    /**
+     * Модели сервиса в порядке попыток: выбранная вручную, потом та, что ответила в прошлый раз,
+     * потом остальные — сильные семейства впереди.
+     */
+    private suspend fun orderedModels(provider: CloudProvider, key: String): List<String> {
+        val list = modelsCache[provider] ?: try {
             CloudClient.models(provider, key)
         } catch (e: CloudClient.CloudException) {
             throw CloudClient.CloudException("не удалось получить список моделей: ${e.reason}")
         } catch (e: Exception) {
             throw CloudClient.CloudException("не удалось получить список моделей")
-        }.also { modelsCache[provider] = it })
-            .filter { it.id !in exclude }
-        val pick = CloudClient.pickDefault(provider, models)
-            ?: throw CloudClient.CloudException("нет доступных моделей")
-        AppLog.i("Автовыбор модели ${provider.title}: ${pick.id} (подходящих моделей: ${models.size})")
-        return pick.id
+        }.also { if (it.isNotEmpty()) modelsCache[provider] = it }
+        if (list.isEmpty()) throw CloudClient.CloudException("нет доступных моделей")
+        val ranked = CloudClient.rank(provider, list).map { it.id }
+        val manual = Prefs.model(context, provider)
+        val last = Prefs.autoModel(context, provider).first
+        return (listOf(manual, last).filter { it.isNotEmpty() && it in ranked } + ranked).distinct()
     }
 
     /** Списки моделей на время работы приложения (меняются редко). */
@@ -393,8 +420,13 @@ class TranslationEngine(private val context: Context) {
         const val PROVIDER_PHONE = "на телефоне"
         /** Русский текст занимает много «токенов», поэтому порции поменьше — чтобы влезть в лимиты Groq. */
         private const val CHUNK_CHARS = 4000
-        private const val MAX_MODEL_TRIES = 3
-        private const val DAY_MS = 24L * 60 * 60 * 1000
+        /** OpenRouter: бесплатных запросов мало, поэтому пробуем не больше 4 моделей за раз. */
+        private const val ROUTER_TRIES = 4
+        /** Перед вторым кругом Groq — короткая пауза: перегрузка часто проходит за секунду-другую. */
+        private const val GROQ_RETRY_PAUSE_MS = 1500L
+
+        /** Короткое имя модели для карточки: «openai/gpt-oss-120b:free» → «gpt-oss-120b». */
+        fun shortModel(model: String): String = model.substringAfterLast('/').removeSuffix(":free")
 
         fun languageName(code: String): String =
             Locale(code).getDisplayLanguage(Locale("ru")).ifBlank { code }
