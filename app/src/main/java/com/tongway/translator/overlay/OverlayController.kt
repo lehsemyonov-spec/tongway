@@ -103,8 +103,10 @@ class OverlayController(private val service: AccessibilityService) {
     private var fingerCapture: Deferred<ImageTextFinder.Capture>? = null
     private var fingerParams: WindowManager.LayoutParams? = null
     /** Жест двумя пальцами передаётся приложению под слоем — чтобы можно было приближать фото. */
-    private val gesturePasser = GesturePasser(service) {
-        // Слой снова ловит палец чуть позже, чтобы последние повторённые касания успели дойти до приложения.
+    private val gesturePasser: GesturePasser = GesturePasser(service) { onGestureFinished() }
+
+    /** Слой снова ловит палец чуть позже, чтобы последние повторённые касания успели дойти до приложения. */
+    private fun onGestureFinished() {
         fingerCanvas?.postDelayed({ if (!gesturePasser.isActive) setFingerTouchable(true) }, 80)
     }
     private var lastFingerExit = 0L
