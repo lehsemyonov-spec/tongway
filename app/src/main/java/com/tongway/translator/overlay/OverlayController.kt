@@ -1107,23 +1107,13 @@ class OverlayController(private val service: AccessibilityService) {
             root.background = popupBackground()
             val screen = screenSize()
             val width = minOf(screen.x - dp(24), dp(520))
+            // Касания мимо окна уходят приложению и окно не закрывают — только крестик
+            // (случайный тап по экрану не должен терять перевод).
             params = overlayParams(width, WindowManager.LayoutParams.WRAP_CONTENT, touchable = true).apply {
-                flags = flags or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH
                 x = (screen.x - width) / 2 - windowOffset.x
             }
             scroll.maxHeightPx = (screen.y * 0.45f).toInt()
 
-            root.setOnTouchListener { _, event ->
-                if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
-                    if (popup === this) {
-                        lastOutsideDismiss = SystemClock.uptimeMillis()
-                        dismissPopup()
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
             btnClose.setOnClickListener { if (popup === this) dismissPopup() }
             btnOriginal.setOnClickListener {
                 val show = original.visibility != View.VISIBLE
