@@ -75,7 +75,12 @@ object ImageTextFinder {
      * area — только эта часть снимка (полоса вокруг прицела), координаты экрана; null — весь экран.
      * exclude — зоны, где текст не с картинки: системные панели, надписи и кнопки приложений.
      */
-    suspend fun recognize(bitmap: Bitmap, area: Rect? = null, exclude: List<Rect> = emptyList()): List<Block> {
+    suspend fun recognize(
+        bitmap: Bitmap,
+        area: Rect? = null,
+        exclude: List<Rect> = emptyList(),
+        quiet: Boolean = false,
+    ): List<Block> {
         val region = area?.let { Rect(it).apply { intersect(0, 0, bitmap.width, bitmap.height) } }
             ?.takeIf { !it.isEmpty }
             ?: Rect(0, 0, bitmap.width, bitmap.height)
@@ -98,7 +103,7 @@ object ImageTextFinder {
                     try {
                         val better = recognizeLines(upscaled, 2f, region)
                         val letters = { list: List<PageLayout.Line> -> list.sumOf { l -> l.text.count { it.isLetter() } } }
-                        AppLog.i("Мелкий текст (строка ${median.toInt()} px): увеличил вдвое, букв ${letters(lines)} → ${letters(better)}")
+                        if (!quiet) AppLog.i("Мелкий текст (строка ${median.toInt()} px): увеличил вдвое, букв ${letters(lines)} → ${letters(better)}")
                         if (letters(better) >= letters(lines)) lines = better
                     } finally {
                         upscaled.recycle()
@@ -107,7 +112,7 @@ object ImageTextFinder {
             }
             val boxes = exclude.map { PageLayout.Box(it.left, it.top, it.right, it.bottom) }
             val result = PageLayout.build(lines, bitmap.width, boxes)
-            AppLog.i(
+            if (!quiet) AppLog.i(
                 "Сборка страницы: строк ${lines.size}, отброшено ${result.dropped}, " +
                     "наклон ${"%.1f".format(result.angle)}°, абзацев ${result.paragraphs.size}"
             )

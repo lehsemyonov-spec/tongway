@@ -4,6 +4,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Bundle
 import android.text.Editable
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.text.TextWatcher
 import android.text.format.DateUtils
 import android.view.LayoutInflater
@@ -14,6 +18,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.tongway.translator.ui.TechBackgroundDrawable
@@ -85,6 +90,35 @@ class HistoryActivity : AppCompatActivity() {
         Toast.makeText(this, R.string.popup_copied, Toast.LENGTH_SHORT).show()
     }
 
+    /** Сеанс Live: все фразы по порядку — перевод и под ним оригинал. */
+    private fun showSession(entry: HistoryStore.Entry) {
+        val originals = entry.original.split('\n')
+        val translations = entry.translated.split('\n')
+        val muted = ContextCompat.getColor(this, R.color.text_muted)
+        val text = SpannableStringBuilder()
+        val plain = StringBuilder()
+        originals.forEachIndexed { i, original ->
+            val translated = translations.getOrElse(i) { "…" }
+            if (text.isNotEmpty()) text.append("\n\n")
+            text.append(translated)
+            val start = text.length
+            text.append("\n").append(original)
+            text.setSpan(ForegroundColorSpan(muted), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            text.setSpan(RelativeSizeSpan(0.85f), start, text.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            plain.append(translated).append("\n").append(original).append("\n\n")
+        }
+        AlertDialog.Builder(this)
+            .setTitle(listOf(entry.appName, entry.provider).filter { it.isNotBlank() }.joinToString(" · "))
+            .setMessage(text)
+            .setPositiveButton(R.string.live_copy_all) { _, _ ->
+                val clipboard = getSystemService(ClipboardManager::class.java)
+                clipboard.setPrimaryClip(ClipData.newPlainText("Live", plain.toString().trim()))
+                Toast.makeText(this, R.string.popup_copied, Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton(R.string.live_close, null)
+            .show()
+    }
+
     private fun askDelete(entry: HistoryStore.Entry) {
         AlertDialog.Builder(this)
             .setMessage(R.string.history_delete_confirm)
@@ -118,7 +152,7 @@ class HistoryActivity : AppCompatActivity() {
                 .joinToString(" · ")
             holder.translation.text = entry.translated
             holder.original.text = entry.original
-            holder.itemView.setOnClickListener { copy(entry) }
+            holder.itemView.setOnClickListener { if (isLive(entry)) showSession(entry) else copy(entry) }
             holder.itemView.setOnLongClickListener {
                 askDelete(entry)
                 true
@@ -126,9 +160,16 @@ class HistoryActivity : AppCompatActivity() {
         }
     }
 
+    private fun isLive(entry: HistoryStore.Entry) = entry.provider.startsWith(LIVE_PREFIX)
+
     private class Holder(view: View) : RecyclerView.ViewHolder(view) {
         val meta: TextView = view.findViewById(R.id.itemMeta)
         val translation: TextView = view.findViewById(R.id.itemTranslation)
         val original: TextView = view.findViewById(R.id.itemOriginal)
+    }
+
+    companion object {
+        /** Записи сеансов Live: provider начинается с «Live ·». */
+        const val LIVE_PREFIX = "Live"
     }
 }

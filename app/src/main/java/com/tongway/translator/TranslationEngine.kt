@@ -390,6 +390,25 @@ class TranslationEngine(private val context: Context) {
     }
 
     /**
+     * Live: новые строки субтитров нейросетью, с контекстом прошлых строк. Ради скорости —
+     * не больше 2 моделей каждого сервиса (Groq, потом OpenRouter). null — облако выключено или
+     * не ответило; тогда остаётся перевод телефона.
+     */
+    suspend fun translateLive(lines: List<String>, context: List<String>): Pair<List<String?>, String>? {
+        if (!cloudEnabled()) return null
+        val problems = mutableListOf<String>()
+        for (provider in listOf(CloudProvider.GROQ, CloudProvider.OPENROUTER)) {
+            val key = keyOf(provider) ?: continue
+            val cloud = tryModels(provider, key, {}, problems, null, LIVE_TRIES) { p, k, m ->
+                CloudClient.translateLive(p, k, m, lines, context)
+            }
+            if (cloud != null) return cloud.value to cloud.label
+        }
+        AppLog.i("Live: облако не ответило — ${problems.distinct().joinToString("; ")}")
+        return null
+    }
+
+    /**
      * Быстрый перевод для всего экрана: без определения языка, только с английского.
      * Русский текст возвращается как есть.
      */
@@ -422,6 +441,8 @@ class TranslationEngine(private val context: Context) {
         private const val CHUNK_CHARS = 4000
         /** OpenRouter: бесплатных запросов мало, поэтому пробуем не больше 4 моделей за раз. */
         private const val ROUTER_TRIES = 4
+        /** Live: субтитры ждать не будут — пробуем не больше 2 моделей каждого сервиса. */
+        private const val LIVE_TRIES = 2
         /** Перед вторым кругом Groq — короткая пауза: перегрузка часто проходит за секунду-другую. */
         private const val GROQ_RETRY_PAUSE_MS = 1500L
 

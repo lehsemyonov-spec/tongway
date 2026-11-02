@@ -118,6 +118,44 @@ class OverlayController(private val service: AccessibilityService) {
     /** Сдвиг между координатами окон и экрана (на некоторых телефонах из-за выреза камеры). */
     private val windowOffset = Point()
 
+    /** Режим Live: рамка на субтитрах и лента с переводом каждой новой фразы. */
+    private var liveSession: LiveSession? = null
+    private val liveHost = object : LiveHost {
+        override val context get() = this@OverlayController.context
+        override val scope get() = this@OverlayController.scope
+        override fun dp(value: Int) = this@OverlayController.dp(value)
+        override fun overlayParams(width: Int, height: Int, touchable: Boolean) =
+            this@OverlayController.overlayParams(width, height, touchable)
+        override fun addWindow(view: View, params: WindowManager.LayoutParams) = this@OverlayController.addWindow(view, params)
+        override fun removeWindow(view: View) {
+            if (view.isAttachedToWindow) this@OverlayController.removeWindow(view)
+        }
+        override fun updateWindow(view: View, params: WindowManager.LayoutParams) {
+            if (view.isAttachedToWindow) runCatching { windowManager.updateViewLayout(view, params) }
+        }
+        override fun screenSize() = this@OverlayController.screenSize()
+        override fun windowOffset() = windowOffset
+        override fun panelBackground() = popupBackground()
+        override suspend fun captureFor(area: Rect): ImageTextFinder.Capture {
+            // Кружок прячем, только если он заходит на рамку, — иначе он мигал бы каждые 0,7 с.
+            val view = bubble
+            val over = view != null && Rect.intersects(bubbleAnchor(), area)
+            if (!over) return ImageTextFinder.capture(service)
+            view!!.alpha = 0f
+            return try {
+                delay(SCREENSHOT_DELAY_MS)
+                ImageTextFinder.capture(service)
+            } finally {
+                view.alpha = idleAlpha
+            }
+        }
+        override fun appLabel(packageName: String) = this@OverlayController.appLabel(packageName)
+        override fun topPackage() = ScreenTextFinder.topPackage(service)
+        override fun onLiveEnded() {
+            liveSession = null
+        }
+    }
+
     val isBubbleShown: Boolean get() = bubble != null
 
     // ---------- Кружок ----------
@@ -168,6 +206,7 @@ class OverlayController(private val service: AccessibilityService) {
     }
 
     fun hideBubble() {
+        stopLive()
         snapAnimator?.cancel()
         exitFingerMode()
         removeDragViews()
@@ -180,6 +219,7 @@ class OverlayController(private val service: AccessibilityService) {
     }
 
     fun onScreenChanged() {
+        stopLive()
         val view = bubble ?: return
         dismissPopup()
         closeScreenTranslation()
@@ -189,6 +229,7 @@ class OverlayController(private val service: AccessibilityService) {
     }
 
     fun destroy() {
+        stopLive()
         translateJob?.cancel()
         pendingMenu?.let { bubble?.removeCallbacks(it) }
         exitFingerMode()
@@ -699,6 +740,7 @@ class OverlayController(private val service: AccessibilityService) {
                 }
                 // Текст с картинки — бонусом можно отсканировать весь экран.
                 if (fromImage) card.offerPage(found.bounds, found.packageName)
+                if (!result.alreadyTarget && ImageTextFinder.isSupported) card.offerLive(found.bounds, found.packageName)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -708,6 +750,21 @@ class OverlayController(private val service: AccessibilityService) {
                 bubble?.busy = false
             }
         }
+    }
+
+    // ---------- Live ----------
+
+    private fun startLive(anchor: Rect, packageName: String) {
+        stopLive()
+        dismissPopup()
+        updateWindowOffset()
+        val frame = LiveSession.frameAround(anchor, screenSize()) { dp(it) }
+        liveSession = LiveSession(liveHost, frame, packageName).also { it.start() }
+    }
+
+    private fun stopLive() {
+        liveSession?.stop()
+        liveSession = null
     }
 
     // ---------- Перевод всего экрана ----------
@@ -1096,6 +1153,7 @@ class OverlayController(private val service: AccessibilityService) {
         private val btnOriginal = root.findViewById<TextView>(R.id.popupBtnOriginal)
         private val btnCopy = root.findViewById<TextView>(R.id.popupBtnCopy)
         private val btnClose = root.findViewById<TextView>(R.id.popupBtnClose)
+        private val btnLive = root.findViewById<TextView>(R.id.popupBtnLive)
         private val menu = root.findViewById<View>(R.id.popupMenu)
         private val pageRow = root.findViewById<View>(R.id.popupPageRow)
         private val note = root.findViewById<TextView>(R.id.popupNote)
@@ -1139,6 +1197,13 @@ class OverlayController(private val service: AccessibilityService) {
             pageRow.visibility = View.VISIBLE
             root.findViewById<View>(R.id.popupBtnPage).setOnClickListener { scanWholeScreen(anchor, packageName, plates = false) }
             root.findViewById<View>(R.id.popupBtnPlates).setOnClickListener { scanWholeScreen(anchor, packageName, plates = true) }
+            reposition()
+        }
+
+        /** Кнопка «Live»: следить за субтитрами в этом месте. */
+        fun offerLive(anchor: Rect, packageName: String) {
+            btnLive.visibility = View.VISIBLE
+            btnLive.setOnClickListener { startLive(anchor, packageName) }
             reposition()
         }
 

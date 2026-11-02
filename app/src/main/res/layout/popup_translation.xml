@@ -229,6 +229,19 @@
             android:layout_height="wrap_content"
             android:text="@string/popup_original" />
 
+        <!-- Live: следить за субтитрами в этом месте и переводить каждую новую фразу. -->
+        <TextView
+            android:id="@+id/popupBtnLive"
+            style="@style/Tongway.PillSmall.Outline"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:text="@string/live_button"
+            android:textColor="@color/accent_light"
+            android:visibility="gone" />
+
         <Space
             android:layout_width="0dp"
             android:layout_height="0dp"

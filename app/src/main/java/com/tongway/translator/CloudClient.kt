@@ -74,6 +74,15 @@ object CloudClient {
             "by blank lines: keep exactly the same paragraphs, separated by blank lines. " +
             "Reply with the translation only: no comments, no headings of your own."
 
+    private const val SYSTEM_LIVE =
+        "You are a professional subtitle translator. The user sends a JSON object: \"context\" holds the " +
+            "previous subtitle lines of the same video (already translated, do NOT translate them), and " +
+            "\"lines\" is an object whose keys are numbers and whose values are new English subtitle lines. " +
+            "A sentence may continue across lines. Translate every new line into natural spoken Russian, " +
+            "using the context to keep the meaning coherent. The lines were recognized from the video frame, " +
+            "so silently fix obvious recognition errors. Reply with a JSON object with exactly the same keys " +
+            "as \"lines\", each value being the Russian translation of that line. Reply with the JSON only."
+
     /** Добавка к заданию, если текст распознан с фото. */
     private const val OCR_NOTE =
         " The text was recognized from a photo (OCR), so it may contain recognition errors: letters " +
@@ -162,6 +171,21 @@ object CloudClient {
         texts.forEachIndexed { i, t -> input.put((i + 1).toString(), t) }
         val reply = clean(chat(provider, key, model, SYSTEM_MANY + if (ocr) OCR_NOTE else "", input.toString()))
         parseNumbered(reply, texts.size) ?: throw CloudException("нейросеть ответила не в том виде")
+    }
+
+    /** Live: новые строки субтитров с контекстом из прошлых строк — одним запросом. */
+    suspend fun translateLive(
+        provider: CloudProvider,
+        key: String,
+        model: String,
+        lines: List<String>,
+        context: List<String>,
+    ): List<String?> = withContext(Dispatchers.IO) {
+        val numbered = JSONObject()
+        lines.forEachIndexed { i, t -> numbered.put((i + 1).toString(), t) }
+        val input = JSONObject().put("context", JSONArray(context)).put("lines", numbered)
+        val reply = clean(chat(provider, key, model, SYSTEM_LIVE, input.toString()))
+        parseNumbered(reply, lines.size) ?: throw CloudException("нейросеть ответила не в том виде", tryOtherModel = true)
     }
 
     /** Разбирает ответ: объект {"1": "...", ...} или, на всякий случай, массив. */
