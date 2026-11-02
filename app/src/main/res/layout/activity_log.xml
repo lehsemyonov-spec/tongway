@@ -45,8 +45,9 @@
                 android:text="@string/log_hint" />
         </LinearLayout>
 
+        <!-- Колба с ДНК вырезана целиком и без фона (слайд 10) — просто украшение. -->
         <ImageView
-            android:layout_width="80dp"
+            android:layout_width="86dp"
             android:layout_height="150dp"
             android:importantForAccessibility="no"
             android:scaleType="fitCenter"
