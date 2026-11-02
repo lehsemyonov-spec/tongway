@@ -358,7 +358,7 @@ class LiveSession(
             "Live · ${done.size} фраз · $minutes мин" + if (by.isNotEmpty()) " · $by" else "",
         )
         AppLog.i("Live выключен: сохранено ${done.size} фраз")
-        Toast.makeText(context, context.getString(R.string.live_saved, done.size), Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.live_saved, done.size), Toast.LENGTH_LONG).show()
     }
 
     companion object {

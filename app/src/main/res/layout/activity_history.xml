@@ -83,6 +83,46 @@
             android:text="@string/history_clear" />
     </LinearLayout>
 
+    <!-- Вкладки: всё, обычные переводы, сеансы Live. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/tabAll"
+            style="@style/Tongway.PillSmall.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp" />
+
+        <TextView
+            android:id="@+id/tabPlain"
+            style="@style/Tongway.PillSmall.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1.25"
+            android:maxLines="1"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp" />
+
+        <TextView
+            android:id="@+id/tabLive"
+            style="@style/Tongway.PillSmall.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp" />
+    </LinearLayout>
+
     <TextView
         android:id="@+id/historyEmpty"
         style="@style/Tongway.Body"

@@ -135,9 +135,9 @@
 
     <!-- История -->
     <string name="history_title">История</string>
-    <string name="history_hint">Переводы кружком. Нажмите на запись, чтобы скопировать перевод, подержите — чтобы удалить.</string>
+    <string name="history_hint">Нажмите на перевод — скопировать, на сеанс Live — открыть. Подержите — удалить.</string>
     <string name="history_search">Поиск по истории</string>
-    <string name="history_clear">Очистить всё</string>
+    <string name="history_clear">Очистить</string>
     <string name="history_clear_confirm">Удалить всю историю переводов?</string>
     <string name="history_delete_confirm">Удалить эту запись?</string>
     <string name="history_empty">Пока пусто. Переведите что-нибудь кружком — перевод появится здесь.</string>
@@ -212,7 +212,16 @@
     <string name="live_stop">Выключить Live</string>
     <string name="live_other_app">Live ждёт: вернитесь в видео</string>
     <string name="live_phone">телефон</string>
-    <string name="live_saved">Сеанс Live сохранён в историю: %d фраз</string>
+    <string name="live_saved">Сеанс Live сохранён (%d фраз): История → вкладка «● Live»</string>
     <string name="live_copy_all">Копировать всё</string>
     <string name="live_close">Закрыть</string>
+    <string name="history_tab_all">Все · %d</string>
+    <string name="history_tab_plain">Переводы · %d</string>
+    <string name="history_tab_live">● Live · %d</string>
+    <string name="history_clear_all_confirm">Удалить всю историю: и переводы, и сеансы Live?</string>
+    <string name="history_clear_plain_confirm">Удалить все обычные переводы? Сеансы Live останутся.</string>
+    <string name="history_clear_live_confirm">Удалить все сеансы Live? Обычные переводы останутся.</string>
+    <string name="history_live_empty">Сеансов Live пока нет.\n\nНаведите кружок на субтитры и в окне перевода нажмите «● Live». Когда выключите Live, весь сеанс появится здесь.</string>
+    <string name="history_plain_empty">Обычных переводов пока нет. Переведите что-нибудь кружком — перевод появится здесь.</string>
+    <string name="live_open_session">Открыть сеанс →</string>
 </resources>

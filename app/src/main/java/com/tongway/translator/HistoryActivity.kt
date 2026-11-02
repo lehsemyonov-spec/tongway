@@ -31,6 +31,11 @@ class HistoryActivity : AppCompatActivity() {
     private lateinit var empty: TextView
     private val adapter = Adapter()
 
+    /** Вкладки: всё, обычные переводы, сеансы Live. */
+    private enum class Tab { ALL, PLAIN, LIVE }
+    private var tab = Tab.ALL
+    private lateinit var tabs: Map<Tab, TextView>
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setBackgroundDrawable(TechBackgroundDrawable(this))
@@ -43,11 +48,33 @@ class HistoryActivity : AppCompatActivity() {
             adapter = this@HistoryActivity.adapter
         }
         findViewById<View>(R.id.btnBack).setOnClickListener { goHome() }
+        tabs = mapOf(
+            Tab.ALL to findViewById(R.id.tabAll),
+            Tab.PLAIN to findViewById(R.id.tabPlain),
+            Tab.LIVE to findViewById(R.id.tabLive),
+        )
+        tabs.forEach { (t, view) ->
+            view.setOnClickListener {
+                tab = t
+                refresh()
+            }
+        }
+        if (intent.getBooleanExtra(EXTRA_LIVE, false)) tab = Tab.LIVE
+        // Очищается только то, что видно на выбранной вкладке.
         findViewById<View>(R.id.btnClear).setOnClickListener {
+            val message = when (tab) {
+                Tab.ALL -> R.string.history_clear_all_confirm
+                Tab.PLAIN -> R.string.history_clear_plain_confirm
+                Tab.LIVE -> R.string.history_clear_live_confirm
+            }
             AlertDialog.Builder(this)
-                .setMessage(R.string.history_clear_confirm)
+                .setMessage(message)
                 .setPositiveButton(R.string.delete) { _, _ ->
-                    HistoryStore.clear(this)
+                    when (tab) {
+                        Tab.ALL -> HistoryStore.clear(this)
+                        Tab.PLAIN -> HistoryStore.removeWhere(this) { !isLive(it) }
+                        Tab.LIVE -> HistoryStore.removeWhere(this) { isLive(it) }
+                    }
                     refresh()
                 }
                 .setNegativeButton(R.string.cancel, null)
@@ -68,16 +95,34 @@ class HistoryActivity : AppCompatActivity() {
     private fun refresh() {
         val query = search.text.toString().trim()
         val all = HistoryStore.all(this)
+        val live = all.count { isLive(it) }
+        tabs.getValue(Tab.ALL).text = getString(R.string.history_tab_all, all.size)
+        tabs.getValue(Tab.PLAIN).text = getString(R.string.history_tab_plain, all.size - live)
+        tabs.getValue(Tab.LIVE).text = getString(R.string.history_tab_live, live)
+        tabs.forEach { (t, view) ->
+            val selected = t == tab
+            view.setBackgroundResource(if (selected) R.drawable.bg_pill else R.drawable.bg_pill_outline)
+            view.setTextColor(
+                ContextCompat.getColor(this, if (selected) R.color.text else if (t == Tab.LIVE) R.color.accent_light else R.color.text_secondary)
+            )
+        }
+        val inTab = when (tab) {
+            Tab.ALL -> all
+            Tab.PLAIN -> all.filterNot { isLive(it) }
+            Tab.LIVE -> all.filter { isLive(it) }
+        }
         val shown = if (query.isEmpty()) {
-            all
+            inTab
         } else {
-            all.filter { it.original.contains(query, ignoreCase = true) || it.translated.contains(query, ignoreCase = true) }
+            inTab.filter { it.original.contains(query, ignoreCase = true) || it.translated.contains(query, ignoreCase = true) }
         }
         adapter.submit(shown)
         empty.visibility = if (shown.isEmpty()) View.VISIBLE else View.GONE
         empty.setText(
             when {
                 !Prefs.historyEnabled(this) && all.isEmpty() -> R.string.history_off
+                inTab.isEmpty() && tab == Tab.LIVE -> R.string.history_live_empty
+                inTab.isEmpty() && tab == Tab.PLAIN -> R.string.history_plain_empty
                 all.isEmpty() -> R.string.history_empty
                 else -> R.string.history_nothing_found
             }
@@ -130,7 +175,7 @@ class HistoryActivity : AppCompatActivity() {
             .show()
     }
 
-    private inner class Adapter : RecyclerView.Adapter<Holder>() {
+    private inner class Adapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         private var items: List<HistoryStore.Entry> = emptyList()
 
         @Suppress("NotifyDataSetChanged")
@@ -141,22 +186,40 @@ class HistoryActivity : AppCompatActivity() {
 
         override fun getItemCount() = items.size
 
-        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
-            Holder(LayoutInflater.from(parent.context).inflate(R.layout.item_history, parent, false))
+        override fun getItemViewType(position: Int) = if (isLive(items[position])) TYPE_LIVE else TYPE_PLAIN
 
-        override fun onBindViewHolder(holder: Holder, position: Int) {
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            val inflater = LayoutInflater.from(parent.context)
+            return if (viewType == TYPE_LIVE) {
+                LiveHolder(inflater.inflate(R.layout.item_history_live, parent, false))
+            } else {
+                Holder(inflater.inflate(R.layout.item_history, parent, false))
+            }
+        }
+
+        override fun onBindViewHolder(viewHolder: RecyclerView.ViewHolder, position: Int) {
             val entry = items[position]
             val time = DateUtils.getRelativeTimeSpanString(entry.time, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS)
+            viewHolder.itemView.setOnLongClickListener {
+                askDelete(entry)
+                true
+            }
+            if (viewHolder is LiveHolder) {
+                // «Live · 37 фраз · 12 мин · Groq · модель» → итоги без слова Live.
+                val clock = DateUtils.formatDateTime(this@HistoryActivity, entry.time, DateUtils.FORMAT_SHOW_TIME)
+                viewHolder.title.text = listOf(entry.appName, "$time, $clock").filter { it.isNotBlank() }.joinToString(" · ")
+                viewHolder.stats.text = entry.provider.split(" · ").drop(1).joinToString(" · ")
+                viewHolder.preview.text = entry.translated.lines().filter { it.isNotBlank() }.take(3).joinToString("\n")
+                viewHolder.itemView.setOnClickListener { showSession(entry) }
+                return
+            }
+            val holder = viewHolder as Holder
             holder.meta.text = listOf(entry.appName, time.toString(), entry.provider)
                 .filter { it.isNotBlank() }
                 .joinToString(" · ")
             holder.translation.text = entry.translated
             holder.original.text = entry.original
-            holder.itemView.setOnClickListener { if (isLive(entry)) showSession(entry) else copy(entry) }
-            holder.itemView.setOnLongClickListener {
-                askDelete(entry)
-                true
-            }
+            holder.itemView.setOnClickListener { copy(entry) }
         }
     }
 
@@ -168,8 +231,18 @@ class HistoryActivity : AppCompatActivity() {
         val original: TextView = view.findViewById(R.id.itemOriginal)
     }
 
+    private class LiveHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val title: TextView = view.findViewById(R.id.liveItemTitle)
+        val stats: TextView = view.findViewById(R.id.liveItemStats)
+        val preview: TextView = view.findViewById(R.id.liveItemPreview)
+    }
+
     companion object {
         /** Записи сеансов Live: provider начинается с «Live ·». */
         const val LIVE_PREFIX = "Live"
+        /** Открыть историю сразу на вкладке «● Live». */
+        const val EXTRA_LIVE = "live"
+        private const val TYPE_PLAIN = 0
+        private const val TYPE_LIVE = 1
     }
 }

@@ -40,6 +40,14 @@ object HistoryStore {
         save(context, list)
     }
 
+    /** Удалить записи, подходящие под условие (например, только сеансы Live). */
+    @Synchronized
+    fun removeWhere(context: Context, predicate: (Entry) -> Boolean) {
+        val list = load(context)
+        list.removeAll(predicate)
+        save(context, list)
+    }
+
     @Synchronized
     fun clear(context: Context) {
         val list = load(context)
