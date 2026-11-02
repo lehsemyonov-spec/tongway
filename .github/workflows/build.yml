@@ -4,6 +4,9 @@ on:
   push:
     branches-ignore:
       - apk
+    # Правка только руководства (docs/) не выпускает новую версию приложения.
+    paths-ignore:
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
