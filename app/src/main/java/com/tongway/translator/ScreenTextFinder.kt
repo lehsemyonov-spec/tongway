@@ -144,7 +144,30 @@ object ScreenTextFinder {
                 return Found(paragraph, rect, packageName)
             }
         }
+        if (!weak) {
+            joinSubtitleLines(root, text, bestBounds)?.let { (joined, rect) ->
+                return Found(joined, rect, packageName)
+            }
+        }
         return Found(text.take(MAX_TEXT), Rect(bestBounds), packageName, weak)
+    }
+
+    /**
+     * Субтитры в две строки приложения часто отдают отдельными элементами — под прицелом
+     * оказывается одна строка. Добавляем к ней соседние строки того же субтитра.
+     */
+    private fun joinSubtitleLines(root: AccessibilityNodeInfo, text: String, bounds: Rect): Pair<String, Rect>? {
+        val h = bounds.height()
+        if (h <= 0) return null
+        val around = Rect(bounds.left - bounds.width(), bounds.top - 3 * h, bounds.right + bounds.width(), bounds.bottom + 3 * h)
+        val nearby = mutableListOf<Block>()
+        collect(root, around, nearby)
+        val target = SubtitleJoin.Piece(text, bounds.left, bounds.top, bounds.right, bounds.bottom)
+        val others = nearby.map { SubtitleJoin.Piece(it.text, it.bounds.left, it.bounds.top, it.bounds.right, it.bounds.bottom) }
+        val joined = SubtitleJoin.extend(target, others, leftAligned = false)
+        if (joined === target) return null
+        AppLog.i("Субтитры: к строке под прицелом добавлены соседние строки")
+        return joined.text.take(MAX_TEXT) to Rect(joined.left, joined.top, joined.right, joined.bottom)
     }
 
     private fun nodeText(node: AccessibilityNodeInfo): String? {

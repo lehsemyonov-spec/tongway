@@ -212,6 +212,19 @@ object ImageTextFinder {
             ?.first
     }
 
+    /**
+     * Субтитр в две строки распознавание иногда делит на два абзаца (большой зазор между строками
+     * с подложкой) — добавляем к абзацу под прицелом соседние строки того же субтитра.
+     */
+    fun withSubtitleLines(block: Block, blocks: List<Block>): Block {
+        fun piece(b: Block) = SubtitleJoin.Piece(b.text, b.bounds.left, b.bounds.top, b.bounds.right, b.bounds.bottom, b.lineHeight)
+        val target = piece(block)
+        val joined = SubtitleJoin.extend(target, blocks.filter { it !== block }.map { piece(it) })
+        if (joined === target) return block
+        AppLog.i("Субтитры: к абзацу под прицелом добавлены соседние строки")
+        return Block(joined.text, Rect(joined.left, joined.top, joined.right, joined.bottom), joined.lineHeight)
+    }
+
     private fun distance(r: Rect, x: Int, y: Int): Double {
         val dx = maxOf(r.left - x, 0, x - r.right)
         val dy = maxOf(r.top - y, 0, y - r.bottom)

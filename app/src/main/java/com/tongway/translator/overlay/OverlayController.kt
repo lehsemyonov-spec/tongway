@@ -665,7 +665,7 @@ class OverlayController(private val service: AccessibilityService) {
                 val band = Rect(0, (y - half).coerceAtLeast(0), screen.x, (y + half).coerceAtMost(screen.y))
                 val (blocks, problem) = recognizeScreen(band, aim = Point(x, y), exclude = excludedZones(withAppText = false))
                 removeScan()
-                val block = ImageTextFinder.blockAt(blocks, x, y, dp(28))
+                val block = ImageTextFinder.blockAt(blocks, x, y, dp(28))?.let { ImageTextFinder.withSubtitleLines(it, blocks) }
                 if (block != null) {
                     AppLog.i("Текст найден на картинке: ${block.text.length} симв.")
                     found = ScreenTextFinder.Found(block.text, block.bounds, ScreenTextFinder.topPackage(service))
