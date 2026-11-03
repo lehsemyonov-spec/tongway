@@ -24,6 +24,12 @@ object ImageTextFinder {
     /** Кусок текста, найденный на снимке, в координатах экрана; lineHeight — средняя высота строки. */
     data class Block(val text: String, val bounds: Rect, val lineHeight: Int = 0)
 
+    /** Что увидело распознавание (для журнала Live): сколько строк нашлось и сколько отброшено. */
+    class Stats {
+        var lines = 0
+        var dropped = 0
+    }
+
     /** Результат снимка: картинка или понятная причина, почему не вышло. */
     sealed class Capture {
         class Ok(val bitmap: Bitmap) : Capture()
@@ -80,6 +86,7 @@ object ImageTextFinder {
         area: Rect? = null,
         exclude: List<Rect> = emptyList(),
         quiet: Boolean = false,
+        stats: Stats? = null,
     ): List<Block> {
         val region = area?.let { Rect(it).apply { intersect(0, 0, bitmap.width, bitmap.height) } }
             ?.takeIf { !it.isEmpty }
@@ -112,6 +119,8 @@ object ImageTextFinder {
             }
             val boxes = exclude.map { PageLayout.Box(it.left, it.top, it.right, it.bottom) }
             val result = PageLayout.build(lines, bitmap.width, boxes)
+            stats?.lines = lines.size
+            stats?.dropped = result.dropped
             if (!quiet) AppLog.i(
                 "Сборка страницы: строк ${lines.size}, отброшено ${result.dropped}, " +
                     "наклон ${"%.1f".format(result.angle)}°, абзацев ${result.paragraphs.size}"

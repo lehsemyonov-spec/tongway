@@ -71,7 +71,29 @@ class LiveSession(
         var final: String? = null
         var by: String? = null
         var row: View? = null
+        /** Из скольких кусков субтитров склеено предложение. */
+        var chunks = 0
     }
+
+    /** Для журнала: что происходило за сеанс. */
+    private class Stats {
+        var chunks = 0
+        var joined = 0
+        var timeouts = 0
+        var cloudAnswers = 0
+        var cloudMs = 0L
+        var phoneOnly = 0
+        var captureErrors = 0
+        var unreadable = 0
+        var russian = 0
+    }
+    private val stats = Stats()
+
+    // Пустая рамка и нечитаемый текст — пишем в журнал один раз, а не каждые 0,7 с.
+    private var emptySince = 0L
+    private var emptyLogged = false
+    private var unreadableLogged = false
+    private var captureProblem: String? = null
 
     private val context = host.context
     private val phrases = mutableListOf<Phrase>()
@@ -166,7 +188,11 @@ class LiveSession(
             }
             // Предложение так и не кончилось, а новых субтитров давно нет (пауза в речи) — переводим как есть.
             if (joiner.hasOpen && SystemClock.uptimeMillis() - lastChunkAt > OPEN_TIMEOUT_MS) {
-                joiner.flush()?.let { complete(it) }
+                joiner.flush()?.let {
+                    stats.timeouts++
+                    AppLog.i("Live: продолжения нет ${OPEN_TIMEOUT_MS / 1000.0} с — перевожу как есть")
+                    complete(it)
+                }
             }
             val spent = SystemClock.uptimeMillis() - began
             delay((PERIOD_MS - spent).coerceAtLeast(MIN_PAUSE_MS))
@@ -174,15 +200,21 @@ class LiveSession(
     }
 
     private suspend fun readFrame() {
+        val seen = ImageTextFinder.Stats()
         val text = try {
             when (val capture = host.captureFor(frame)) {
                 is ImageTextFinder.Capture.Failed -> {
-                    AppLog.i("Live: ${capture.reason}")
+                    stats.captureErrors++
+                    // Одну и ту же причину пишем один раз, пока снимки снова не пойдут.
+                    if (captureProblem != capture.reason) AppLog.i("Live: снимок не получился — ${capture.reason}")
+                    captureProblem = capture.reason
                     return
                 }
                 is ImageTextFinder.Capture.Ok -> try {
+                    if (captureProblem != null) AppLog.i("Live: снимки снова получаются")
+                    captureProblem = null
                     val blocks = withContext(Dispatchers.Default) {
-                        ImageTextFinder.recognize(capture.bitmap, frame, quiet = true)
+                        ImageTextFinder.recognize(capture.bitmap, frame, quiet = true, stats = seen)
                     }
                     PageLayout.joinRows(blocks.sortedBy { it.bounds.top }.map { it.text })
                 } finally {
@@ -195,10 +227,41 @@ class LiveSession(
             AppLog.e("Live: ошибка распознавания", e)
             return
         }
+        logFrameState(text, seen)
         // Русские субтитры переводить не нужно.
-        val english = if (App.engine.looksCyrillic(text)) "" else text
+        val russian = App.engine.looksCyrillic(text)
+        if (russian) stats.russian++
+        val english = if (russian) "" else text
         reader.feed(english)?.let { onChunk(it) }
     }
+
+    /**
+     * Журнал: субтитры пропали и вернулись; в рамке что-то есть, но прочитать нельзя.
+     * Так видно, где виновато видео (субтитры сами погасли), а где — распознавание.
+     */
+    private fun logFrameState(text: String, seen: ImageTextFinder.Stats) {
+        val now = SystemClock.uptimeMillis()
+        if (text.isBlank()) {
+            if (emptySince == 0L) emptySince = now
+            if (!emptyLogged && now - emptySince >= EMPTY_LOG_MS) {
+                emptyLogged = true
+                AppLog.i("Live: в рамке нет текста ${(now - emptySince) / 1000} с — субтитров на экране нет")
+            }
+            // Строки нашлись, но все отброшены (мелкие, кривые, неуверенные) — это «плохо читается».
+            if (seen.lines > 0 && !unreadableLogged) {
+                unreadableLogged = true
+                stats.unreadable++
+                AppLog.i("Live: в рамке что-то есть (строк ${seen.lines}), но прочитать не удалось — все отброшены")
+            }
+        } else {
+            if (emptyLogged) AppLog.i("Live: текст снова появился (не было ${(now - emptySince) / 1000} с)")
+            emptySince = 0L
+            emptyLogged = false
+            unreadableLogged = false
+        }
+    }
+
+    private fun quote(text: String) = "«" + (if (text.length > 90) text.take(90) + "…" else text) + "»"
 
     // ---------- Перевод ----------
 
@@ -208,7 +271,15 @@ class LiveSession(
      */
     private fun onChunk(text: String) {
         lastChunkAt = SystemClock.uptimeMillis()
+        stats.chunks++
         val update = joiner.add(text)
+        AppLog.i(
+            "Live: кусок ${quote(text)}" + when {
+                update.open != null && update.complete.isEmpty() -> " → предложение не кончилось, жду продолжения"
+                update.open != null -> " → готово ${update.complete.size}, хвост ждёт продолжения"
+                else -> ""
+            }
+        )
         update.complete.forEach { complete(it) }
         update.open?.let { showOpen(it) }
         refreshRows()
@@ -222,6 +293,7 @@ class LiveSession(
             openPhrase = it
         }
         phrase.original = text
+        phrase.chunks++
         draftOnPhone(phrase)
     }
 
@@ -230,7 +302,9 @@ class LiveSession(
         val phrase = openPhrase?.also { openPhrase = null } ?: Phrase(nextId++, text).also { phrases.add(it) }
         phrase.original = text
         phrase.open = false
-        AppLog.i("Live: предложение №${phrase.id}: ${text.length} симв.")
+        val parts = phrase.chunks + 1
+        if (parts > 1) stats.joined++
+        AppLog.i("Live: предложение №${phrase.id}" + (if (parts > 1) " (склеено из $parts кусков)" else "") + ": ${quote(text)}")
         draftOnPhone(phrase)
         // Если запрос уже идёт, предложение ждёт следующего.
         pending.addLast(phrase)
@@ -279,9 +353,16 @@ class LiveSession(
                         phrase.by = label
                     }
                 }
-                AppLog.i("Live: $label перевёл ${batch.size} фраз(ы) за ${SystemClock.uptimeMillis() - started} мс")
+                val ms = SystemClock.uptimeMillis() - started
+                stats.cloudAnswers++
+                stats.cloudMs += ms
+                AppLog.i("Live: $label перевёл №${batch.joinToString(", ") { it.id.toString() }} за $ms мс")
             }
-            batch.filter { it.final == null }.forEach { it.by = context.getString(R.string.live_phone) }
+            batch.filter { it.final == null }.forEach {
+                it.by = context.getString(R.string.live_phone)
+                stats.phoneOnly++
+                AppLog.i("Live: №${it.id} остался переводом телефона")
+            }
             if (!paused && !waitingOtherApp) status.text = statusText()
             refreshRows()
             cloudBusy = false
@@ -390,6 +471,7 @@ class LiveSession(
         val done = phrases.filter { it.original.isNotBlank() }
         if (done.isEmpty()) {
             AppLog.i("Live выключен: фраз не было")
+            logSummary(0, ((System.currentTimeMillis() - started) / 60000).coerceAtLeast(1))
             return
         }
         val minutes = ((System.currentTimeMillis() - started) / 60000).coerceAtLeast(1)
@@ -406,10 +488,24 @@ class LiveSession(
             "Live · ${done.size} фраз · $minutes мин" + if (by.isNotEmpty()) " · $by" else "",
         )
         AppLog.i("Live выключен: сохранено ${done.size} фраз")
+        logSummary(done.size, minutes)
         Toast.makeText(context, context.getString(R.string.live_saved, done.size), Toast.LENGTH_LONG).show()
     }
 
+    /** Итог сеанса в журнал: по нему видно, как Live справился в целом. */
+    private fun logSummary(sentences: Int, minutes: Long) {
+        val average = if (stats.cloudAnswers > 0) stats.cloudMs / stats.cloudAnswers else 0
+        AppLog.i(
+            "Live, итог за $minutes мин: предложений $sentences (склеено из нескольких кусков: ${stats.joined}), " +
+                "кусков субтитров ${stats.chunks}, без продолжения по паузе ${stats.timeouts}; " +
+                "ответов нейросети ${stats.cloudAnswers} (в среднем $average мс), только телефон ${stats.phoneOnly}; " +
+                "русских кадров ${stats.russian}, нечитаемых ${stats.unreadable}, неудачных снимков ${stats.captureErrors}"
+        )
+    }
+
     companion object {
+        /** Через сколько пустой рамки писать в журнал «субтитров нет». */
+        private const val EMPTY_LOG_MS = 5000L
         /** Как часто читать рамку. */
         private const val PERIOD_MS = 700L
         private const val MIN_PAUSE_MS = 150L
