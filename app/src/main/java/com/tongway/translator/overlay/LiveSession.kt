@@ -23,6 +23,7 @@ import com.tongway.translator.ImageTextFinder
 import com.tongway.translator.LiveText
 import com.tongway.translator.PageLayout
 import com.tongway.translator.R
+import com.tongway.translator.SentenceJoiner
 import com.tongway.translator.ScreenTextFinder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -63,7 +64,9 @@ class LiveSession(
     private var frame: Rect,
     private val packageName: String,
 ) {
-    private class Phrase(val id: Int, val original: String) {
+    private class Phrase(val id: Int, var original: String) {
+        /** Предложение ещё не кончилось — ждём продолжения в следующих субтитрах. */
+        var open = false
         var draft: String? = null
         var final: String? = null
         var by: String? = null
@@ -74,6 +77,11 @@ class LiveSession(
     private val phrases = mutableListOf<Phrase>()
     private val pending = ArrayDeque<Phrase>()
     private val reader = LiveText()
+    /** Склеивает куски субтитров в целые предложения по знакам препинания. */
+    private val joiner = SentenceJoiner()
+    /** Строка ленты с незаконченным предложением. */
+    private var openPhrase: Phrase? = null
+    private var lastChunkAt = 0L
     private var nextId = 1
     private var loop: Job? = null
     private var cloudBusy = false
@@ -156,6 +164,10 @@ class LiveSession(
                     readFrame()
                 }
             }
+            // Предложение так и не кончилось, а новых субтитров давно нет (пауза в речи) — переводим как есть.
+            if (joiner.hasOpen && SystemClock.uptimeMillis() - lastChunkAt > OPEN_TIMEOUT_MS) {
+                joiner.flush()?.let { complete(it) }
+            }
             val spent = SystemClock.uptimeMillis() - began
             delay((PERIOD_MS - spent).coerceAtLeast(MIN_PAUSE_MS))
         }
@@ -185,29 +197,59 @@ class LiveSession(
         }
         // Русские субтитры переводить не нужно.
         val english = if (App.engine.looksCyrillic(text)) "" else text
-        reader.feed(english)?.let { addPhrase(it) }
+        reader.feed(english)?.let { onChunk(it) }
     }
 
     // ---------- Перевод ----------
 
-    private fun addPhrase(text: String) {
-        val phrase = Phrase(nextId++, text)
-        phrases.add(phrase)
-        AppLog.i("Live: фраза №${phrase.id}: ${text.length} симв.")
+    /**
+     * Новый кусок субтитров. Готовые предложения уходят на перевод целиком; незаконченное
+     * показывается черновиком телефона и дополняется, пока не встретится конец предложения.
+     */
+    private fun onChunk(text: String) {
+        lastChunkAt = SystemClock.uptimeMillis()
+        val update = joiner.add(text)
+        update.complete.forEach { complete(it) }
+        update.open?.let { showOpen(it) }
         refreshRows()
-        // Дорожка 1: телефон — мгновенный черновик.
+    }
+
+    /** Незаконченное предложение: в нейросеть пока не отправляем, только черновик телефона. */
+    private fun showOpen(text: String) {
+        val phrase = openPhrase ?: Phrase(nextId++, text).also {
+            it.open = true
+            phrases.add(it)
+            openPhrase = it
+        }
+        phrase.original = text
+        draftOnPhone(phrase)
+    }
+
+    /** Предложение кончилось: дорожка 1 — телефон, дорожка 2 — нейросеть (тот же английский текст). */
+    private fun complete(text: String) {
+        val phrase = openPhrase?.also { openPhrase = null } ?: Phrase(nextId++, text).also { phrases.add(it) }
+        phrase.original = text
+        phrase.open = false
+        AppLog.i("Live: предложение №${phrase.id}: ${text.length} симв.")
+        draftOnPhone(phrase)
+        // Если запрос уже идёт, предложение ждёт следующего.
+        pending.addLast(phrase)
+        if (!cloudBusy) sendToCloud()
+        refreshRows()
+    }
+
+    private fun draftOnPhone(phrase: Phrase) {
+        val text = phrase.original
         host.scope.launch {
             val draft = runCatching { App.engine.translateEnglish(text) }
                 .onFailure { if (it !is CancellationException) AppLog.e("Live: телефон не перевёл", it) }
                 .getOrNull()
-            if (draft != null && phrase.final == null) {
+            // Пока переводили, к предложению могли добавиться слова — тогда этот черновик устарел.
+            if (draft != null && phrase.final == null && phrase.original == text) {
                 phrase.draft = draft
                 refreshRows()
             }
         }
-        // Дорожка 2: нейросеть — тот же английский текст; если запрос уже идёт, фраза ждёт следующего.
-        pending.addLast(phrase)
-        if (!cloudBusy) sendToCloud()
     }
 
     private fun sendToCloud() {
@@ -215,6 +257,7 @@ class LiveSession(
         val batch = buildList { while (pending.isNotEmpty() && size < BATCH) add(pending.removeFirst()) }
         val firstIndex = phrases.indexOf(batch.first())
         val previous = phrases.subList((firstIndex - CONTEXT_LINES).coerceAtLeast(0), firstIndex.coerceAtLeast(0))
+            .filterNot { it.open }
             .map { it.original }
         cloudBusy = true
         host.scope.launch {
@@ -274,8 +317,9 @@ class LiveSession(
                     setTextColor(ContextCompat.getColor(context, R.color.text))
                 }
                 phrase.draft != null -> {
-                    // Черновик телефона — бледный и наклонный, пока не придёт нейросеть.
-                    text = phrase.draft
+                    // Черновик телефона — бледный и наклонный, пока не придёт нейросеть;
+                    // «…» в конце — предложение ещё продолжается.
+                    text = if (phrase.open) phrase.draft + " …" else phrase.draft
                     setTextColor(ContextCompat.getColor(context, R.color.text_muted))
                     setTypeface(typeface, Typeface.ITALIC)
                 }
@@ -338,7 +382,11 @@ class LiveSession(
     // ---------- История ----------
 
     private fun saveSession() {
-        reader.flush()?.let { phrases.add(Phrase(nextId++, it)) }
+        reader.flush()?.let { joiner.add(it) }
+        joiner.flush()?.let { rest ->
+            val phrase = openPhrase ?: Phrase(nextId++, rest).also { phrases.add(it) }
+            phrase.original = rest
+        }
         val done = phrases.filter { it.original.isNotBlank() }
         if (done.isEmpty()) {
             AppLog.i("Live выключен: фраз не было")
@@ -370,6 +418,8 @@ class LiveSession(
         /** Сколько прошлых фраз отдаём нейросети для связности. */
         private const val CONTEXT_LINES = 3
         private const val VISIBLE_ROWS = 4
+        /** Сколько ждать продолжения незаконченного предложения, если новых субтитров нет. */
+        private const val OPEN_TIMEOUT_MS = 3500L
         /** Новая фраза яркая, старые бледнеют. */
         private val ROW_ALPHA = floatArrayOf(1f, 0.72f, 0.5f, 0.35f)
 
