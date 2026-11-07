@@ -9,7 +9,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.os.SystemClock
 import android.util.TypedValue
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
@@ -17,6 +19,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.tongway.translator.App
+import com.tongway.translator.FrameResize
+import com.tongway.translator.Prefs
+import com.tongway.translator.StaticFilter
 import com.tongway.translator.AppLog
 import com.tongway.translator.HistoryStore
 import com.tongway.translator.ImageTextFinder
@@ -27,6 +32,8 @@ import com.tongway.translator.SentenceJoiner
 import com.tongway.translator.ScreenTextFinder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -50,6 +57,8 @@ interface LiveHost {
     suspend fun captureFor(area: Rect): ImageTextFinder.Capture
     fun appLabel(packageName: String): String
     fun topPackage(): String
+    /** Пальцевый перевод ведёт линию или жест двумя пальцами — снимок Live пропускаем. */
+    fun captureBusy(): Boolean
     fun onLiveEnded()
 }
 
@@ -62,7 +71,7 @@ interface LiveHost {
 class LiveSession(
     private val host: LiveHost,
     private var frame: Rect,
-    private val packageName: String,
+    private var packageName: String,
 ) {
     private class Phrase(val id: Int, var original: String) {
         /** Предложение ещё не кончилось — ждём продолжения в следующих субтитрах. */
@@ -86,6 +95,9 @@ class LiveSession(
         var captureErrors = 0
         var unreadable = 0
         var russian = 0
+        var staticSkipped = 0
+        var moved = 0
+        var resized = 0
     }
     private val stats = Stats()
 
@@ -108,7 +120,18 @@ class LiveSession(
     private var loop: Job? = null
     private var cloudBusy = false
     private var paused = false
-    private var waitingOtherApp = false
+    /** Ожидание: ушли в другое приложение или повернули экран (тогда ждём нового наведения кружка). */
+    private enum class Wait { NONE, OTHER_APP, AIM }
+    private var wait = Wait.NONE
+    private var waitingSince = 0L
+    private val waitingOtherApp get() = wait != Wait.NONE
+    /** Надписи на видео (обложка, логотип) стоят на месте — их не переводим. */
+    private val staticFilter = StaticFilter()
+    /** Рамку прямо сейчас тянут за эти уголки. */
+    private val heldCorners = HashSet<Int>()
+    private var knownScreen = host.screenSize()
+    /** Разбудить слежение раньше времени (отпустили уголок, переехала рамка). */
+    private val wake = Channel<Unit>(Channel.CONFLATED)
     private var showOriginal = false
     private var lastProvider: String? = null
     private var ended = false
@@ -117,6 +140,16 @@ class LiveSession(
     private val frameView = LiveFrameView(context)
     private val framePad = host.dp(8)
     private val frameParams = host.overlayParams(0, 0, touchable = false)
+
+    /** Уголки рамки ловят палец (зона с подушечку пальца); внутри рамки касания идут видео. */
+    private val handleSize = host.dp(48)
+    private val handles = Array(4) { corner -> View(context).also { it.setOnTouchListener(CornerTouch(corner)) } }
+    private val handleParams = Array(4) {
+        host.overlayParams(handleSize, handleSize, touchable = true).apply {
+            // Каждый уголок — своё окно: два пальца на двух уголках тянут их одновременно.
+            flags = flags or WindowManager.LayoutParams.FLAG_SPLIT_TOUCH
+        }
+    }
 
     private val lane = LayoutInflater.from(context).inflate(R.layout.live_lane, null)
     private val rows = lane.findViewById<LinearLayout>(R.id.liveRows)
@@ -144,6 +177,7 @@ class LiveSession(
     fun start() {
         placeFrame()
         host.addWindow(frameView, frameParams)
+        handles.forEachIndexed { i, h -> host.addWindow(h, handleParams[i]) }
         host.addWindow(lane, laneParams)
         status.setText(R.string.live_waiting)
         reposition()
@@ -157,9 +191,150 @@ class LiveSession(
         ended = true
         loop?.cancel()
         host.removeWindow(frameView)
+        handles.forEach { host.removeWindow(it) }
         host.removeWindow(lane)
         saveSession()
         host.onLiveEnded()
+    }
+
+    /** Кружок навели на субтитры при включённом Live — рамка переезжает туда, сеанс продолжается. */
+    fun relocate(found: Rect, newPackage: String) {
+        if (ended) return
+        val screen = host.screenSize()
+        frame = frameFor(found, newPackage, screen)
+        val changedApp = newPackage != packageName
+        packageName = newPackage
+        stats.moved++
+        knownScreen = screen
+        staticFilter.reset()
+        AppLog.i(
+            "Live: рамка перенесена" + (if (changedApp) " в ${host.appLabel(newPackage)}" else "") + ": $frame" +
+                if (wait != Wait.NONE) " — ожидание закончено" else ""
+        )
+        stopWaiting()
+        refitLane(screen)
+        moveFrameWindows()
+        wake.trySend(Unit)
+    }
+
+    /** Повернули экран: старая рамка не на месте — ждём, пока кружок наведут на субтитры заново. */
+    fun onScreenChanged() {
+        if (ended) return
+        // Настройки экрана меняются не только при повороте (тема, шрифт) — ждём, только если размер стал другим.
+        val screen = host.screenSize()
+        if (screen == knownScreen) return
+        knownScreen = screen
+        refitLane(screen)
+        if (wait != Wait.AIM) {
+            startWaiting(Wait.AIM)
+            AppLog.i("Live: экран повернулся — жду, пока кружок наведут на субтитры")
+        }
+        status.setText(R.string.live_aim_again)
+        reposition()
+    }
+
+    /** Пальцевый слой лёг поверх всего — поднимаем уголки и ленту обратно наверх, чтобы их можно было коснуться. */
+    fun raiseAbove() {
+        if (ended) return
+        handles.forEachIndexed { i, h ->
+            host.removeWindow(h)
+            host.addWindow(h, handleParams[i])
+        }
+        host.removeWindow(lane)
+        host.addWindow(lane, laneParams)
+        reposition()
+    }
+
+    /** Где сейчас лента (координаты экрана) — чтобы окно пальцевого перевода её не закрывало. */
+    fun laneBounds(): Rect? {
+        if (ended || !lane.isAttachedToWindow) return null
+        val offset = host.windowOffset()
+        val x = laneParams.x + offset.x
+        val y = laneParams.y + offset.y
+        return Rect(x, y, x + laneParams.width, y + lane.height.coerceAtLeast(lane.measuredHeight))
+    }
+
+    private fun startWaiting(kind: Wait) {
+        if (wait == Wait.NONE) waitingSince = SystemClock.uptimeMillis()
+        wait = kind
+        setFrameVisible(false)
+    }
+
+    private fun stopWaiting() {
+        if (wait == Wait.NONE) return
+        wait = Wait.NONE
+        setFrameVisible(true)
+        status.text = if (paused) context.getString(R.string.live_paused) else statusText()
+    }
+
+    private fun setFrameVisible(visible: Boolean) {
+        val state = if (visible) View.VISIBLE else View.INVISIBLE
+        frameView.visibility = state
+        handles.forEach { it.visibility = state }
+    }
+
+    /** Рамка для найденных субтитров: размер, который растянули в этом приложении, или обычный. */
+    private fun frameFor(found: Rect, pkg: String, screen: Point): Rect {
+        val saved = Prefs.liveFrame(context, pkg, screen.x > screen.y)
+            ?: return frameAround(found, screen) { host.dp(it) }
+        val box = FrameResize.placeSaved(found.centerX(), found.bottom, saved.first, saved.second, screen.x, screen.y, host.dp(16))
+        return Rect(box.left, box.top, box.right, box.bottom)
+    }
+
+    private fun refitLane(screen: Point) {
+        val width = minOf(screen.x - host.dp(24), host.dp(520))
+        laneParams.width = width
+        laneParams.x = (screen.x - width) / 2 - host.windowOffset().x
+    }
+
+    private fun moveFrameWindows() {
+        placeFrame()
+        host.updateWindow(frameView, frameParams)
+        frameView.invalidate()
+        handles.forEachIndexed { i, h -> host.updateWindow(h, handleParams[i]) }
+        reposition()
+    }
+
+    /** Один уголок рамки: тянем — меняется размер, противоположный уголок стоит на месте. */
+    private inner class CornerTouch(private val corner: Int) : View.OnTouchListener {
+        override fun onTouch(view: View, event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    heldCorners.add(corner)
+                    frameView.active = heldCorners.toSet()
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val screen = host.screenSize()
+                    val box = FrameResize.drag(
+                        FrameResize.Box(frame.left, frame.top, frame.right, frame.bottom),
+                        corner, event.rawX.toInt(), event.rawY.toInt(), screen.x, screen.y,
+                        host.dp(MIN_FRAME_W_DP), host.dp(MIN_FRAME_H_DP),
+                    )
+                    frame = Rect(box.left, box.top, box.right, box.bottom)
+                    moveFrameWindows()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    heldCorners.remove(corner)
+                    frameView.active = heldCorners.toSet()
+                    if (heldCorners.isEmpty()) onResized()
+                }
+            }
+            return true
+        }
+    }
+
+    private fun onResized() {
+        val screen = host.screenSize()
+        Prefs.setLiveFrame(
+            context, packageName, screen.x > screen.y,
+            frame.width().toFloat() / screen.x, frame.height().toFloat() / screen.y,
+        )
+        stats.resized++
+        // Рамка теперь другая: прошлые положения надписей больше не совпадают.
+        staticFilter.reset()
+        AppLog.i("Live: рамку растянули: $frame (запомнил для ${host.appLabel(packageName)})")
+        wake.trySend(Unit)
     }
 
     // ---------- Слежение ----------
@@ -167,24 +342,28 @@ class LiveSession(
     private suspend fun watch() {
         while (host.scope.isActive && !ended) {
             val began = SystemClock.uptimeMillis()
-            if (!paused) {
+            if (!paused && wait != Wait.AIM) {
                 if (host.topPackage() != packageName) {
                     // Ушли из приложения с видео — не читаем чужой экран и не тратим запросы.
-                    if (!waitingOtherApp) {
-                        waitingOtherApp = true
-                        frameView.visibility = View.INVISIBLE
+                    if (wait == Wait.NONE) {
+                        startWaiting(Wait.OTHER_APP)
                         status.setText(R.string.live_other_app)
-                        AppLog.i("Live: другое приложение на экране — жду")
+                        AppLog.i("Live: другое приложение на экране — жду (вернитесь в ${host.appLabel(packageName)} или наведите кружок на субтитры)")
                     }
                 } else {
-                    if (waitingOtherApp) {
-                        waitingOtherApp = false
-                        frameView.visibility = View.VISIBLE
-                        status.text = statusText()
+                    if (wait == Wait.OTHER_APP) {
+                        stopWaiting()
                         AppLog.i("Live: снова в видео — продолжаю")
                     }
-                    readFrame()
+                    // Пока тянут уголок или пальцем ведут линию — рамку не читаем.
+                    if (heldCorners.isEmpty() && !host.captureBusy()) readFrame()
                 }
+            }
+            // Долгое ожидание — выключаемся сами, сеанс сохраняется.
+            if (wait != Wait.NONE && SystemClock.uptimeMillis() - waitingSince > MAX_WAIT_MS) {
+                AppLog.i("Live: ждал ${MAX_WAIT_MS / 60000} мин — выключаюсь")
+                stop()
+                return
             }
             // Предложение так и не кончилось, а новых субтитров давно нет (пауза в речи) — переводим как есть.
             if (joiner.hasOpen && SystemClock.uptimeMillis() - lastChunkAt > OPEN_TIMEOUT_MS) {
@@ -195,7 +374,7 @@ class LiveSession(
                 }
             }
             val spent = SystemClock.uptimeMillis() - began
-            delay((PERIOD_MS - spent).coerceAtLeast(MIN_PAUSE_MS))
+            withTimeoutOrNull((PERIOD_MS - spent).coerceAtLeast(MIN_PAUSE_MS)) { wake.receive() }
         }
     }
 
@@ -216,7 +395,7 @@ class LiveSession(
                     val blocks = withContext(Dispatchers.Default) {
                         ImageTextFinder.recognize(capture.bitmap, frame, quiet = true, stats = seen)
                     }
-                    PageLayout.joinRows(blocks.sortedBy { it.bounds.top }.map { it.text })
+                    subtitlesOnly(blocks.sortedBy { it.bounds.top })
                 } finally {
                     capture.bitmap.recycle()
                 }
@@ -259,6 +438,19 @@ class LiveSession(
             emptyLogged = false
             unreadableLogged = false
         }
+    }
+
+    /** Убираем неподвижные надписи (обложка, логотип) — остаются субтитры. */
+    private fun subtitlesOnly(blocks: List<ImageTextFinder.Block>): String {
+        val result = staticFilter.feed(
+            blocks.map { StaticFilter.Item(it.text, it.bounds.centerX(), it.bounds.centerY()) },
+            SystemClock.uptimeMillis(),
+        )
+        for ((text, age) in result.newlyStatic) {
+            stats.staticSkipped++
+            AppLog.i("Live: надпись ${quote(text)} стоит на месте ${age / 1000} с — не субтитр, пропускаю")
+        }
+        return PageLayout.joinRows(result.kept.map { blocks[it].text })
     }
 
     private fun quote(text: String) = "«" + (if (text.length > 90) text.take(90) + "…" else text) + "»"
@@ -458,6 +650,14 @@ class LiveSession(
         frameParams.height = frame.height() + framePad * 2
         frameParams.x = frame.left - framePad - offset.x
         frameParams.y = frame.top - framePad - offset.y
+        val corners = listOf(
+            frame.left to frame.top, frame.right to frame.top,
+            frame.right to frame.bottom, frame.left to frame.bottom,
+        )
+        corners.forEachIndexed { i, (cx, cy) ->
+            handleParams[i].x = cx - handleSize / 2 - offset.x
+            handleParams[i].y = cy - handleSize / 2 - offset.y
+        }
     }
 
     // ---------- История ----------
@@ -499,13 +699,19 @@ class LiveSession(
             "Live, итог за $minutes мин: предложений $sentences (склеено из нескольких кусков: ${stats.joined}), " +
                 "кусков субтитров ${stats.chunks}, без продолжения по паузе ${stats.timeouts}; " +
                 "ответов нейросети ${stats.cloudAnswers} (в среднем $average мс), только телефон ${stats.phoneOnly}; " +
-                "русских кадров ${stats.russian}, нечитаемых ${stats.unreadable}, неудачных снимков ${stats.captureErrors}"
+                "русских кадров ${stats.russian}, нечитаемых ${stats.unreadable}, неудачных снимков ${stats.captureErrors}; " +
+                "пропущено надписей ${stats.staticSkipped}, рамку переносили ${stats.moved}, растягивали ${stats.resized}"
         )
     }
 
     companion object {
         /** Через сколько пустой рамки писать в журнал «субтитров нет». */
         private const val EMPTY_LOG_MS = 5000L
+        /** Сколько ждать (другое приложение, поворот экрана), прежде чем выключиться самим. */
+        private const val MAX_WAIT_MS = 10 * 60 * 1000L
+        /** Меньше рамку не сжать: примерно одна короткая строка субтитров. */
+        private const val MIN_FRAME_W_DP = 120
+        private const val MIN_FRAME_H_DP = 36
         /** Как часто читать рамку. */
         private const val PERIOD_MS = 700L
         private const val MIN_PAUSE_MS = 150L
@@ -533,7 +739,7 @@ class LiveSession(
     }
 }
 
-/** Закреплённая рамка Live: оранжевые уголки и метка «LIVE». Касания проходят насквозь. */
+/** Закреплённая рамка Live: оранжевые уголки и метка «LIVE». Касания проходят насквозь (уголки ловят свои окна). */
 class LiveFrameView(context: Context) : View(context) {
     private val density = context.resources.displayMetrics.density
     private val corner = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -554,19 +760,34 @@ class LiveFrameView(context: Context) : View(context) {
             alpha = if (value) 0.4f else 1f
         }
 
+    /** Уголки, за которые сейчас тянут: ярче и толще. */
+    var active: Set<Int> = emptySet()
+        set(value) {
+            field = value
+            invalidate()
+        }
+    private val bright = Paint(corner).apply {
+        color = ContextCompat.getColor(context, R.color.accent_light)
+        strokeWidth = 5f * density
+    }
+    private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.accent_light) }
+
     override fun onDraw(canvas: Canvas) {
         val inset = corner.strokeWidth
         val w = width - inset
         val h = height - inset
         val arm = minOf(22f * density, minOf(w, h) / 3f)
-        canvas.drawLine(inset, inset, inset + arm, inset, corner)
-        canvas.drawLine(inset, inset, inset, inset + arm, corner)
-        canvas.drawLine(w, inset, w - arm, inset, corner)
-        canvas.drawLine(w, inset, w, inset + arm, corner)
-        canvas.drawLine(inset, h, inset + arm, h, corner)
-        canvas.drawLine(inset, h, inset, h - arm, corner)
-        canvas.drawLine(w, h, w - arm, h, corner)
-        canvas.drawLine(w, h, w, h - arm, corner)
+        // 0 — левый верхний, 1 — правый верхний, 2 — правый нижний, 3 — левый нижний.
+        val points = listOf(inset to inset, w to inset, w to h, inset to h)
+        points.forEachIndexed { i, (x, y) ->
+            val paint = if (i in active) bright else corner
+            val dx = if (i == 0 || i == 3) arm else -arm
+            val dy = if (i < 2) arm else -arm
+            canvas.drawLine(x, y, x + dx, y, paint)
+            canvas.drawLine(x, y, x, y + dy, paint)
+            // Точка в уголке — подсказка, что за него можно потянуть.
+            canvas.drawCircle(x, y, (if (i in active) 4.5f else 3f) * density, dot)
+        }
         canvas.drawText("LIVE", inset + arm + 6f * density, inset + label.textSize * 0.4f, label)
     }
 }

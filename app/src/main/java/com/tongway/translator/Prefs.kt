@@ -63,6 +63,21 @@ object Prefs {
     /** Толщина в dp: 10 → 5dp, 40 → 20dp (одна строка с запасом), 100 → 50dp (около двух строк). */
     fun fingerWidthDp(thickness: Int) = thickness * 0.5f
 
+    /** Live: размер рамки (доли экрана), который пользователь растянул в этом приложении; отдельно для поворота. */
+    fun liveFrame(context: Context, packageName: String, landscape: Boolean): Pair<Float, Float>? {
+        val value = prefs(context).getString(liveFrameKey(packageName, landscape), null) ?: return null
+        val parts = value.split(';')
+        val w = parts.getOrNull(0)?.toFloatOrNull() ?: return null
+        val h = parts.getOrNull(1)?.toFloatOrNull() ?: return null
+        return w to h
+    }
+
+    fun setLiveFrame(context: Context, packageName: String, landscape: Boolean, widthShare: Float, heightShare: Float) =
+        prefs(context).edit().putString(liveFrameKey(packageName, landscape), "$widthShare;$heightShare").apply()
+
+    private fun liveFrameKey(packageName: String, landscape: Boolean) =
+        "live_frame_${packageName}_" + if (landscape) "land" else "port"
+
     /** Чем переводить: на телефоне или через OpenRouter. */
     fun provider(context: Context) = prefs(context).getString(KEY_PROVIDER, PROVIDER_PHONE) ?: PROVIDER_PHONE
 

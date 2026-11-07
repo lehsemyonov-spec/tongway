@@ -120,6 +120,8 @@ class OverlayController(private val service: AccessibilityService) {
 
     /** Режим Live: рамка на субтитрах и лента с переводом каждой новой фразы. */
     private var liveSession: LiveSession? = null
+    /** Палец ведёт линию пальцевого перевода — Live в это время не делает снимков. */
+    private var fingerStroking = false
     private val liveHost = object : LiveHost {
         override val context get() = this@OverlayController.context
         override val scope get() = this@OverlayController.scope
@@ -151,6 +153,7 @@ class OverlayController(private val service: AccessibilityService) {
         }
         override fun appLabel(packageName: String) = this@OverlayController.appLabel(packageName)
         override fun topPackage() = ScreenTextFinder.topPackage(service)
+        override fun captureBusy() = fingerStroking || gesturePasser.isActive
         override fun onLiveEnded() {
             liveSession = null
         }
@@ -219,7 +222,8 @@ class OverlayController(private val service: AccessibilityService) {
     }
 
     fun onScreenChanged() {
-        stopLive()
+        // Поворот экрана: Live не выключается, а ждёт нового наведения кружка.
+        liveSession?.onScreenChanged()
         val view = bubble ?: return
         dismissPopup()
         closeScreenTranslation()
@@ -408,6 +412,8 @@ class OverlayController(private val service: AccessibilityService) {
                 if (bubble !== view || fingerCanvas !== canvas) return@post
                 removeWindow(view)
                 addWindow(view, bubbleParams)
+                // Уголки рамки и лента Live тоже должны оставаться над слоем для пальца.
+                liveSession?.raiseAbove()
             }
         }
         AppLog.i("Пальцевый перевод включён, толщина ${Prefs.fingerThickness(service)}")
@@ -417,6 +423,7 @@ class OverlayController(private val service: AccessibilityService) {
         val canvas = fingerCanvas ?: return
         fingerCapture?.cancel()
         fingerCapture = null
+        fingerStroking = false
         dismissPopup()
         gesturePasser.end()
         removeWindow(canvas)
@@ -432,6 +439,7 @@ class OverlayController(private val service: AccessibilityService) {
     private val fingerListener = object : FingerCanvasView.Listener {
         /** Снимок экрана — сразу в момент касания, чтобы субтитры не успели смениться. */
         override fun onStrokeStart() {
+            fingerStroking = true
             dismissPopup()
             val canvas = fingerCanvas ?: return
             canvas.hideStroke = true
@@ -452,6 +460,7 @@ class OverlayController(private val service: AccessibilityService) {
         }
 
         override fun onStrokeEnd(points: List<PageLayout.Pt>) {
+            fingerStroking = false
             val capture = fingerCapture ?: return
             translateJob?.cancel()
             translateJob = scope.launch { translateStroke(capture, points) }
@@ -720,6 +729,11 @@ class OverlayController(private val service: AccessibilityService) {
                 val message = context.getString(R.string.no_text_found) +
                     (imageProblem?.let { "\n\n" + context.getString(R.string.ocr_problem, it) } ?: "")
                 showPopup(Rect(x - 1, y - 1, x + 1, y + 1)).showMessage(message)
+                return@launch
+            }
+            // Live включён: наведение кружка переносит рамку на эти субтитры, сеанс продолжается.
+            liveSession?.let { live ->
+                live.relocate(found.bounds, found.packageName)
                 return@launch
             }
             AppLog.i("Найден текст в ${found.packageName}: ${found.text.length} симв.")
@@ -1311,9 +1325,20 @@ class OverlayController(private val service: AccessibilityService) {
             val screenHeight = screenSize().y
             val margin = dp(12)
             val top = margin + dp(24)
+            val below = anchor.bottom + margin
+            val above = anchor.top - margin - height
+            val fitsBelow = below + height <= screenHeight - margin
+            val fitsAbove = above >= top
+            // При включённом Live окно не должно закрывать его ленту: выбираем свободную сторону.
+            val lane = liveSession?.laneBounds()
+            fun free(y: Int) = lane == null || y + height <= lane.top || y >= lane.bottom
             val y = when {
-                anchor.bottom + margin + height <= screenHeight - margin -> anchor.bottom + margin
-                anchor.top - margin - height >= top -> anchor.top - margin - height
+                fitsBelow && free(below) -> below
+                fitsAbove && free(above) -> above
+                lane != null && free(top) && top + height <= screenHeight -> top
+                lane != null && free(screenHeight - margin - height) -> screenHeight - margin - height
+                fitsBelow -> below
+                fitsAbove -> above
                 anchor.centerY() < screenHeight / 2 -> screenHeight - margin - height
                 else -> top
             }
