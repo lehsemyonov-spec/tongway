@@ -26,22 +26,15 @@ android {
 
     signingConfigs {
         // Печать (ключ подписи) — одна для всех сборок, иначе Android не даст обновить приложение.
-        // Настоящая печать хранится в секрете GitHub TONGWAY_KEYSTORE; сборка кладёт её во временный
-        // файл и передаёт путь в TONGWAY_KEYSTORE_FILE. Без секрета — старая открытая печать из репозитория
-        // (только чтобы сборка не ломалась, пока секрет не добавлен).
+        // Печать хранится только в секрете GitHub TONGWAY_KEYSTORE; сборка кладёт её во временный
+        // файл и передаёт путь в TONGWAY_KEYSTORE_FILE. Открытой печати в проекте больше нет.
         create("tongway") {
             val secretKeystore = System.getenv("TONGWAY_KEYSTORE_FILE")
-            if (secretKeystore != null) {
-                storeFile = file(secretKeystore)
-                storePassword = "tongway-release"
-                keyAlias = "tongway"
-                keyPassword = "tongway-release"
-            } else {
-                storeFile = file("debug.keystore")
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
-            }
+                ?: throw GradleException("Нет печати: задайте TONGWAY_KEYSTORE_FILE (секрет TONGWAY_KEYSTORE)")
+            storeFile = file(secretKeystore)
+            storePassword = "tongway-release"
+            keyAlias = "tongway"
+            keyPassword = "tongway-release"
         }
     }
 

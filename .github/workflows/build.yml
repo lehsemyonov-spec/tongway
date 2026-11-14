@@ -39,14 +39,19 @@ jobs:
             echo "TONGWAY_KEYSTORE_FILE=$RUNNER_TEMP/tongway.keystore" >> "$GITHUB_ENV"
             echo "Подпись: секретная печать"
           else
-            echo "::warning::Секрет TONGWAY_KEYSTORE не задан — подпись старой открытой печатью"
+            # Без секрета не собираем: подписать чужой печатью нельзя — обновление не встанет поверх.
+            echo "::error::Секрет TONGWAY_KEYSTORE не задан — сборка остановлена"
+            exit 1
           fi
 
       - name: Собрать APK
         run: ./gradlew assembleRelease --stacktrace
 
       - name: Подготовить файл
-        run: cp app/build/outputs/apk/release/app-release.apk tongway.apk
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk tongway.apk
+          # Отпечаток печати в журнале сборки — чтобы было видно, чем подписан файл.
+          keytool -printcert -jarfile tongway.apk | grep -m1 "SHA256" || true
 
       - uses: actions/upload-artifact@v4
         with:
